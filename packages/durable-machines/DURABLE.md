@@ -2,7 +2,23 @@
 
 Prototype. `DurableMachine` drives XState's experimental `xstate/durable`
 (`xstate@6.0.0-beta.3`) instead of `createActor` / `restoreActor`. The public API
-is unchanged except for the `actor` getter (see [API](#api)).
+from `main` (`new DurableMachine(host, logic, options)`) is unchanged except for the
+`actor` getter (see [API](#api)).
+
+```ts
+export class Account extends DurableObject<Env> {
+  readonly machine = new DurableMachine(this, accountMachine, {
+    input: (accountId) => ({ accountId, balance: 100, frozen: false }),
+    actions: { toTransfer: ({ transferId, event }) => this.machine.deliver("Transfer", transferId, event) },
+    pace: 700,
+  });
+}
+```
+
+The constructor still provides `actions`, `actors`, `guards` and `delays` to
+`logic.provide()`, reads bindings from `host.env`, installs
+`Lifecycle.install(host).use(this).use(this.webSockets)`, and broadcasts commits to
+`machine.webSockets`. `createDurable` runs on the provided logic.
 
 ## Loop
 
@@ -51,10 +67,14 @@ fenced off by a generation counter, so a late completion cannot leak into the ne
 
 ## Call diff
 
-Baseline: `6735218` (initial commit). Everything below is implemented in local commits on `durable-adapter`; nothing is merged.
+Baseline: `923bdaa` (`main` after [PR #1](https://github.com/ericclemmons/durable-machines/pull/1)). Implemented in [PR #2](https://github.com/ericclemmons/durable-machines/pull/2), not merged.
 
 ```diff
+ new DurableMachine(host, logic, options)
+   #logic = logic.provide({ actions, actors, guards, delays }); #env = host.env
+   Lifecycle.install(host).use(this).use(this.webSockets)
  DurableObject.send(event, envelope) -> DurableMachine.send(event, envelope)
+   await start(); await lifecycle.ready()
 -  storage.transactionSync(() => actor.send(event); #persist())   // createActor, sync
 +  #exclusive(() => #transact(() => #step(event)))
 +    #step: durable.transition(state, event) -> await durable.executeEffects(effects)
@@ -65,7 +85,8 @@ Baseline: `6735218` (initial commit). Everything below is implemented in local c
 +    #settle: #step(mailbox.shift()) until empty
 +    #save: transactionSync(kv.put(checkpoint, timers, journal, inbox) + jobs.push(outbox) + jobs.push(xstate-wake))
 +    on throw: #boot() from storage, rethrow
-   #commit() -> broadcast xstate.commit
+   #commit() -> #broadcast(xstate.commit) -> webSockets.getConnections()[].send
+ view() -> await start() -> #view()
  onStart
 -  #boot: restoreActor(logic, snapshot).start() | createActor(logic, { input }).start()
 +  #boot: createDurable(logic, #adapter(live), { captureRootEvents: false, inspect })
@@ -80,8 +101,15 @@ Baseline: `6735218` (initial commit). Everything below is implemented in local c
 
 ## Verified
 
-- `pnpm check`, `pnpm build`, `examples/ci` `vite build`: pass.
-- `vite dev` end to end: push → Installation → Account → Project → BuildWorkflow →
+- After rebasing on `main`: `pnpm check`, `pnpm --filter durable-machines build`, and
+  `cf build` in `examples/bank` and `examples/ci`: pass.
+- `examples/bank` with `cf dev`: reset, deposit $60, send $10 to alice and $150 to bob.
+  The $10 transfer completed. The $150 one waited in `review` and left on `xstate.after`
+  12.01 s later, then bob (frozen) bounced it and it was refunded. Balance 150 (100 + 60 − 10),
+  no holds, no dead letters. The `/bank/` page loads with no errors.
+- `examples/ci` with `cf dev`: a push to `acme/web` ends with `build.settled` on
+  `Project/free-web` and a delivered `build.finished`.
+- Earlier, on the old API, with `vite dev` end to end: push → Installation → Account → Project → BuildWorkflow →
   build child → `build.settled` → `build.finished` back to the Account. Fan-out to two
   accounts. Outbox `delivered` and `retrying` (chaos `retryable`) entries.
 - Root `after` timer through the wake job (TTL set to 4 s for the test, then reverted):
