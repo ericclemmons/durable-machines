@@ -1,0 +1,23 @@
+---
+title: CI
+description: A small CI system on four Durable Objects and a Workflow, with a debugger clock.
+tableOfContents: false
+sidebar:
+  order: 2
+---
+
+A GitHub webhook reaches an Installation, which fans out to every Account that connected the repository. Each Account routes it to a Project, which queues a build and runs it on a Workflow. Pick a scenario and press play, or pause the clock and step through one message at a time.
+
+<Demo src="https://durable-machines-ci.eclemmons.workers.dev/" title="CI example" />
+
+## What's running
+
+| Object | One per | What it does |
+| --- | --- | --- |
+| `Installation/<id>` | GitHub App installation | Routes each push and pull request to the accounts that use the repository. |
+| `Account/<id>` | Cloudflare account | Caches entitlements from billing, queues builds (1 at a time on Free, 6 on Paid) and starts their Workflows. |
+| `Project/<id>` | project | Decides whether to build, waits for approval on forks, supersedes stale builds, and spawns a `build` child per build. |
+| `BuildWorkflow/<id>` | build | Clones, builds and deploys, reporting each step back. |
+| `Clock/global` | site | The debugger clock. While paused, every hop parks here until you press Next. |
+
+Source: [`examples/ci`](https://github.com/ericclemmons/durable-machines/tree/main/examples/ci).

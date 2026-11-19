@@ -1,0 +1,44 @@
+---
+title: Messages between objects
+description: Send events from one Durable Object's machine to another with deliver(), without losing or repeating them.
+sidebar:
+  order: 4
+---
+
+A machine asks for a message with an action. The object sends it with `deliver()`:
+
+```ts
+// In the machine: declare the action and call it from a transition.
+"transfer.cleared": ({ context, actions }, enq) => {
+  enq(actions.toAccount, { accountId: context.to, event: { type: "transfer.credit", amount: context.amount } });
+  return { target: "crediting" };
+},
+
+// In the Durable Object: implement it.
+actions: {
+  toAccount: ({ accountId, event }) => this.machine.deliver("Account", accountId, event),
+},
+```
+
+`deliver("Account", accountId, event)` sends `event` to `env.Account.getByName(accountId)`, which must have a `send(event, envelope)` method.
+
+## What you can count on
+
+- **Nothing is lost.** The message is written in the same storage transaction as the state that sent it. If the object crashes before the transaction commits, neither happened. If it crashes after, the message is still sent.
+- **Nothing is processed twice.** Every message carries an id. The receiver remembers the last 500 it processed and acknowledges a repeat without running it.
+- **Retries back off.** Delivery follows the [Durable Object error guidance](https://developers.cloudflare.com/durable-objects/best-practices/error-handling/): a fresh stub per attempt, backoff on retryable errors, and a longer wait when the receiver is overloaded.
+
+## When a message can't be delivered
+
+After the retries run out, or when the receiver rejects the event, the message comes back to the sender as an `outbox.failed` event:
+
+```ts
+{ type: "outbox.failed", target: "Account/bob", eventType: "transfer.credit", event: { … }, reason: "…" }
+```
+
+Handle it in the machine to undo what the message started. Durable Bank's Transfer refunds the sender:
+
+```ts
+"outbox.failed": ({ context, event }) =>
+  event.eventType === "transfer.credit" ? { target: ".refunding", context: { ...context, reason: event.reason } } : { context },
+```

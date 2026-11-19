@@ -1,0 +1,46 @@
+---
+title: Durable Bank
+description: Three kinds of Durable Object that move money between visitors, live.
+tableOfContents: false
+sidebar:
+  order: 1
+---
+
+You get your own account, named by your IP address, with $100. Send money to a stranger and watch the Transfer move it. Send to `bob` to see a refund: his account starts frozen.
+
+<Demo src="/bank/" title="Durable Bank" />
+
+## What's running
+
+| Object | One per | What it does |
+| --- | --- | --- |
+| `Account/<your IP>` | visitor | Holds the balance and sets money aside when you send. A frozen account bounces money sent to it. |
+| `Transfer/<id>` | transfer | The saga: `requested → review? → clearing → crediting → settling → completed`, or `→ refunding → refunded`. |
+| `Bank/global` | site | The clearing house everyone shares. It clears one transfer every 2.5 s, so yours waits behind strangers'. |
+
+- **Timers:** a transfer of $100 or more waits 12 s in `review`. It's an `after` timer, so it survives eviction.
+- **Messages:** every hop is a `deliver()` from one object's outbox. Each one waits 700 ms (the `pace` option) so you can see it travel.
+- **Only you spend your money.** Commands go through the Worker, which picks the account from your IP. Everyone can watch every object.
+
+## The code
+
+Each object is a few lines. The machine does the work.
+
+```ts title="examples/bank/src/worker/objects.ts"
+export class Transfer extends DurableObject<Env> {
+  machine = new DurableMachine(this, transferMachine, {
+    input: (transferId) => ({ transferId }),
+    actions: {
+      toAccount: ({ accountId, event }) => this.machine.deliver("Account", accountId, event),
+      toBank: (event) => this.machine.deliver("Bank", "global", event),
+    },
+    pace: 700,
+  });
+
+  send(event: EventFromLogic<typeof transferMachine>, envelope?: Envelope) {
+    return this.machine.send(event, envelope);
+  }
+}
+```
+
+Source: [`examples/bank`](https://github.com/ericclemmons/durable-machines/tree/main/examples/bank).

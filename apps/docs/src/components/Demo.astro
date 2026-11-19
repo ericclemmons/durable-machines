@@ -1,0 +1,36 @@
+---
+/** A live example, embedded. `src` is the example's URL. */
+interface Props {
+  src: string;
+  title: string;
+  height?: string;
+}
+const { src, title, height = "82vh" } = Astro.props;
+---
+
+<figure class="nb-demo not-prose my-6">
+  <iframe
+    src={src}
+    title={title}
+    loading="lazy"
+    class="w-full rounded-xl border border-neutral-200 dark:border-neutral-800"
+    style={`height: ${height}; min-height: 600px;`}></iframe>
+  <figcaption class="mt-2 text-sm text-neutral-500">
+    Live. <a href={src} target="_blank" rel="noopener">Open it full screen</a>.
+  </figcaption>
+</figure>
+
+<style>
+  /* Wider than the text column: break out of it, centred on it. */
+  .nb-demo {
+    position: relative;
+    left: 50%;
+    width: min(84rem, calc(100vw - 2rem));
+    transform: translateX(-50%);
+  }
+  @media (min-width: 64rem) {
+    .nb-demo {
+      width: min(84rem, calc(100vw - var(--nb-sidebar-width, 16rem) - 4rem));
+    }
+  }
+</style>

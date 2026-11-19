@@ -1,0 +1,17 @@
+---
+title: Examples
+description: Systems of Durable Objects built with Durable Machines, running live.
+sidebar:
+  order: 2
+  group:
+    label: Examples
+---
+
+Each example is a few Durable Object classes, each running one XState machine. Open one and use it: every transition and every message between objects shows up as it happens.
+
+<CardGrid>
+  <Card title="Durable Bank" icon="ph:bank" href="/examples/bank/">Your own account, a Transfer saga per transfer, and one clearing house every visitor shares. Timers, refunds, queues.</Card>
+  <Card title="CI" icon="ph:git-branch" href="/examples/ci/">A webhook fans out to accounts and projects, which queue builds on a Workflow. A debugger clock lets you step through every hop.</Card>
+</CardGrid>
+
+The source of each one is in [`examples/`](https://github.com/ericclemmons/durable-machines/tree/main/examples).
