@@ -4,7 +4,7 @@ A bank on three kinds of Durable Object, each running one XState v6 machine. Ope
 
 ```sh
 pnpm install   # from the repository root
-pnpm dev       # http://localhost:5173
+pnpm dev       # http://localhost:5173/bank/
 pnpm check     # typecheck + graph coverage
 ```
 
@@ -28,6 +28,10 @@ The page connects to your account and the Bank, then follows the wires: the Tran
 
 ## Deploy
 
+This Worker also serves the docs site: `vite.config.ts` ships `apps/docs/dist` as static assets, the docs live at `/`, and the demo at `/bank/`. The [Live demo](../../apps/docs/src/content/docs/demo.mdx) docs page embeds it.
+
 ```sh
-pnpm deploy:bank   # from the repository root: vite build && wrangler deploy
+pnpm run deploy   # from the repository root: builds the docs, then `cf deploy`
 ```
+
+Deploys use [`cf`](https://developers.cloudflare.com/cf/) and [`cloudflare.config.ts`](cloudflare.config.ts), not Wrangler.

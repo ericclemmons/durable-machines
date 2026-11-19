@@ -9,11 +9,7 @@
     "preview": "astro preview",
     "typecheck": "astro check",
     "lint:docs": "nimbus-docs lint",
-    "lint:docs:fix": "nimbus-docs lint --fix",
-    "prepreview:cf": "astro build",
-    "preview:cf": "wrangler dev",
-    "predeploy": "astro check && astro build",
-    "deploy": "wrangler deploy"
+    "lint:docs:fix": "nimbus-docs lint --fix"
   },
   "dependencies": {
     "@cloudflare/nimbus-docs": "^0.20.0",
@@ -34,7 +30,6 @@
     "@tailwindcss/vite": "^4.3.3",
     "pagefind": "^1.5.2",
     "tailwindcss": "^4.3.3",
-    "typescript": "^5.9.3",
-    "wrangler": "^4.95.0"
+    "typescript": "^5.9.3"
   }
 }
