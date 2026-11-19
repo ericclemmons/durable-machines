@@ -61,4 +61,6 @@ pnpm install
 pnpm dev
 ```
 
-The example in `examples/ci` is a small CI system: a webhook reaches a repository, which fans out to accounts and projects, which queue and run builds. Press play and watch the messages move between objects.
+The main example, `examples/bank`, is **Durable Bank**: you get your own account, named by your IP address. Send money to a stranger and watch the Transfer saga move it: through review, the clearing house every visitor shares, the receiver's account, and back to yours if they bounce it.
+
+`examples/ci` is a second, larger example: a small CI system on four Durable Objects and a Workflow.

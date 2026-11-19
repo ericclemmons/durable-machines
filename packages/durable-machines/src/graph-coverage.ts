@@ -17,7 +17,7 @@ export type CoverageProblem = { state: string; transition: string; reason: strin
 const isCode = (v: unknown): v is { "@code": string } => typeof v === "object" && v !== null && "@code" in v;
 
 function checkCode(code: string): string | undefined {
-  for (const match of code.matchAll(/\btarget\b\s*(:?)\s*(.?)/g)) {
+  for (const match of code.matchAll(/(?<![.\w$])target\b\s*(:?)\s*(.?)/g)) {
     const [, colon, next] = match;
     if (!colon) return "uses a shorthand `target`; write the state name as a string literal";
     if (next !== '"' && next !== "'" && next !== "`") return "computes `target`; write the state name as a string literal";

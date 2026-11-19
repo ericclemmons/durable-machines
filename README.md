@@ -11,6 +11,7 @@ Durable Machines runs one [XState v6](https://stately.ai/docs) actor in each Clo
 | Path | What |
 | --- | --- |
 | [`packages/durable-machines`](packages/durable-machines) | The npm package: `DurableMachine`, the outbox and Durable Object error handling (`.`), the client protocol types (`./protocol`), the debugger clock (`./clock`) and the graph coverage check (`./graph`). |
+| [`examples/bank`](examples/bank) | **Durable Bank**: one account per visitor, a Transfer saga per transfer, and one clearing house everyone shares. The live demo. |
 | [`examples/ci`](examples/ci) | A small CI system on four Durable Objects and a Workflow, with the live visualizer. |
 | [`apps/docs`](apps/docs) | The [Nimbus](https://nimbus-docs.com) docs site. |
 
@@ -18,7 +19,8 @@ Durable Machines runs one [XState v6](https://stately.ai/docs) actor in each Clo
 
 ```sh
 pnpm install
-pnpm dev      # the example, at http://localhost:5173
+pnpm dev      # Durable Bank, at http://localhost:5173
+pnpm dev:ci   # the CI example
 pnpm check    # typecheck + graph coverage
 ```
 

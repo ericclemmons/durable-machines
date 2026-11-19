@@ -1,0 +1,21 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "durable-machines-bank",
+  "main": "src/worker/index.ts",
+  "compatibility_date": "2026-11-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": true,
+  "assets": {
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/agents/*", "/api/*"]
+  },
+  "durable_objects": {
+    "bindings": [
+      { "name": "Account", "class_name": "Account" },
+      { "name": "Transfer", "class_name": "Transfer" },
+      { "name": "Bank", "class_name": "Bank" }
+    ]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Account", "Transfer", "Bank"] }],
+  "observability": { "enabled": true }
+}

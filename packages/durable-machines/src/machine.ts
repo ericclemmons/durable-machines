@@ -56,6 +56,8 @@ export type DurableMachineOptions<TLogic extends AnyStateMachine> = {
   /** Sends a frame to every connected client. Wire it to the WebSockets capability. */
   broadcast?: (frame: string) => void;
   journalSize?: number;
+  /** Delay, in ms, before each outbox message is sent, so people can watch it travel. Defaults to 0. */
+  pace?: number;
   /** The debugger clock. While it is paused, hops park there until released. */
   park?: (request: ParkRequest) => Promise<ParkResult>;
 };
@@ -99,6 +101,7 @@ export class DurableMachine<TLogic extends AnyStateMachine> extends LifecycleCap
   constructor(options: DurableMachineOptions<TLogic>) {
     super("xstate");
     this.#options = options;
+    this.#clock = { playing: true, pace: options.pace ?? 0 };
     this.#definitions = Object.fromEntries(
       [[options.logic.id, options.logic] as const, ...Object.entries(options.children ?? {})].map(
         ([key, machine]) => [key, machineToJSON(machine)],
