@@ -1,10 +1,8 @@
 import { DurableObject } from "cloudflare:workers";
-import { Lifecycle } from "agents/lifecycle";
-import { WebSockets } from "agents/websockets";
 import { Data, Effect, Schedule } from "effect";
 import { createAsyncLogic, type EventFromLogic } from "xstate";
 import { Chaos, type ChaosMode } from "../lib/chaos";
-import { DurableMachine, MachineCallables } from "durable-machines";
+import { DurableMachine } from "durable-machines";
 import type { ClockSettings, Envelope } from "durable-machines/protocol";
 import { accounts, entitlements, projectsFor } from "../domain/registry";
 import type { Ticket } from "../domain/scm";
@@ -37,28 +35,27 @@ const readEntitlements = async (accountId: string) => {
 export class Account extends DurableObject<Env> {
   #loadedOnce = false;
   readonly chaos = new Chaos();
-  readonly machine: DurableMachine<typeof accountMachine> = new DurableMachine({
-    logic: accountMachine.provide({
-      actions: {
-        toProject: ({ projectId, event }) => this.machine.deliver("Project", projectId, event),
-      },
-      actors: {
-        dispatchBuild: createAsyncLogic({
-          run: async ({ input }: { input: Ticket & { accountId: string } }) => {
-            await this.machine.hold("BuildWorkflow", "create()");
-            return Effect.runPromise(startWorkflow(this.env, input));
-          },
-        }),
-        fetchEntitlements: createAsyncLogic({
-          run: async ({ input }: { input: { accountId: string } }) => {
-            // The first load happens when the Account boots (or resets), before any run: don't park it.
-            if (this.#loadedOnce) await this.machine.hold("billing", "fetch entitlements");
-            this.#loadedOnce = true;
-            return readEntitlements(input.accountId);
-          },
-        }),
-      },
-    }),
+  // Annotated: the actors read this.machine, which would make the type circular.
+  readonly machine: DurableMachine<typeof accountMachine> = new DurableMachine(this, accountMachine, {
+    actors: {
+      dispatchBuild: createAsyncLogic({
+        run: async ({ input }: { input: Ticket & { accountId: string } }) => {
+          await this.machine.hold("BuildWorkflow", "create()");
+          return Effect.runPromise(startWorkflow(this.env, input));
+        },
+      }),
+      fetchEntitlements: createAsyncLogic({
+        run: async ({ input }: { input: { accountId: string } }) => {
+          // The first load happens when the Account boots (or resets), before any run: don't park it.
+          if (this.#loadedOnce) await this.machine.hold("billing", "fetch entitlements");
+          this.#loadedOnce = true;
+          return readEntitlements(input.accountId);
+        },
+      }),
+    },
+    actions: {
+      toProject: ({ projectId, event }) => this.machine.deliver("Project", projectId, event),
+    },
     input: (name) => {
       const account = accounts[name];
       if (!account) throw new Error(`Unknown account ${name}`);
@@ -66,33 +63,21 @@ export class Account extends DurableObject<Env> {
       for (const p of projectsFor(name)) (repos[p.repo.toLowerCase()] ??= []).push(p.id);
       return { accountId: account.id, name: account.name, repos };
     },
-    env: this.env,
     park: (request) => this.env.Clock.getByName("global").park(request),
     clientEvents: ["entitlements.refresh"],
-    broadcast: (frame) => {
-      for (const connection of this.webSockets.getConnections()) connection.send(frame);
-    },
   });
-  readonly webSockets: WebSockets = new WebSockets({
-    state: this.machine,
-    callables: new MachineCallables(this.machine as never),
-  });
-  readonly lifecycle = Lifecycle.install(this).use(this.machine).use(this.webSockets);
 
   /** The one way in: other Workers and Durable Objects send typed events. */
-  async send(event: EventFromLogic<typeof accountMachine>, envelope?: Envelope) {
+  send(event: EventFromLogic<typeof accountMachine>, envelope?: Envelope) {
     this.chaos.check();
-    await this.lifecycle.start();
     return this.machine.send(event, envelope);
   }
 
-  async view() {
-    await this.lifecycle.start();
-    return this.machine.get();
+  view() {
+    return this.machine.view();
   }
 
   async reset() {
-    await this.lifecycle.start();
     this.#loadedOnce = false;
     await this.machine.reset();
   }
@@ -101,13 +86,11 @@ export class Account extends DurableObject<Env> {
     this.chaos.set(mode, seconds);
   }
 
-  async setClock(settings: ClockSettings) {
-    await this.lifecycle.start();
-    await this.machine.setClock(settings);
+  setClock(settings: ClockSettings) {
+    return this.machine.setClock(settings);
   }
 
-  async release(token: string) {
-    await this.lifecycle.start();
+  release(token: string) {
     return this.machine.release(token);
   }
 }

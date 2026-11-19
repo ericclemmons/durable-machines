@@ -1,6 +1,6 @@
 import { Badge, Loader, Text } from "@cloudflare/kumo";
 import { CheckCircleIcon, HourglassIcon, PauseCircleIcon, PushPinIcon } from "@phosphor-icons/react";
-import { useLayoutEffect, useMemo, useRef, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, type ReactNode } from "react";
 import type { JournalEntry } from "durable-machines/protocol";
 import { formatValue } from "./graph";
 import { setDockTab, setPinned, setSelectedNode, useAllViews, useClock, useInFlight, usePinned, useSending } from "./store";
@@ -54,7 +54,7 @@ function changeLines(from: unknown, to: unknown): string[] {
  * messages on their way and hops waiting for the next press of play. Each
  * Click an event to see the system as it was right after it: the canvas zooms
  * to it, the dock shows what changed in the object's state, and the row shows
- * the event's payload. Click it again to go back to live.
+ * the event's payload. ↑ and ↓ select the previous and next event. Click it again to go back to live.
  * Internal entries are left out here; DevTools → Console has everything.
  */
 export function EventPanel({ header, footer }: { header: ReactNode; footer: ReactNode }) {
@@ -80,6 +80,27 @@ export function EventPanel({ header, footer }: { header: ReactNode; footer: Reac
     const el = list.current;
     if (el && atBottom.current) el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
   }, [rows.length, clock.parked.length]);
+
+  // With an event selected, ↑ and ↓ select the previous and next event instead of scrolling.
+  useEffect(() => {
+    if (!pinned) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "ArrowUp" && event.key !== "ArrowDown") return;
+      if (event.altKey || event.metaKey || event.ctrlKey || event.shiftKey) return;
+      const target = event.target as HTMLElement | null;
+      if (target?.closest("input, textarea, select, [contenteditable], [role=listbox], [role=combobox], [role=slider], [role=separator]")) return;
+      const i = rows.findIndex(({ owner, entry }) => owner === pinned.owner && entry.seq === pinned.seq);
+      const next = rows[i + (event.key === "ArrowUp" ? -1 : 1)];
+      event.preventDefault();
+      if (i < 0 || !next) return;
+      setPinned({ owner: next.owner, seq: next.entry.seq, at: next.entry.at });
+      const button = list.current?.querySelector<HTMLButtonElement>(`[data-event="${CSS.escape(`${next.owner}#${next.entry.seq}`)}"]`);
+      button?.focus({ preventScroll: true });
+      button?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [pinned, rows]);
 
   return (
     <section className="flex h-full min-h-0 min-w-0 flex-col whitespace-normal">
@@ -115,6 +136,7 @@ export function EventPanel({ header, footer }: { header: ReactNode; footer: Reac
                   }
                 }}
                 aria-pressed={isPinned}
+                data-event={id}
                 title={new Date(e.at).toLocaleTimeString([], { hour12: false })}
                 className="grid w-full gap-1 px-4 py-2 text-left text-sm hover:bg-kumo-tint"
               >

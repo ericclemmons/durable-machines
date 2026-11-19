@@ -12,6 +12,7 @@ import {
   createActor,
   machineToJSON,
   type Actor,
+  type AnyActorLogic,
   type AnyStateMachine,
   type EventFromLogic,
   type InputFrom,
@@ -46,7 +47,10 @@ type Delivery = { binding: string; name: string; event: AnyEvent; envelope: Enve
 type Receiver = { send(event: AnyEvent, envelope?: Envelope): Promise<SendResult> };
 
 /** What `machine.provide()` takes: `actions`, `actors`, `guards` and `delays`. */
-type Implementations<TLogic extends AnyStateMachine> = NonNullable<Parameters<TLogic["provide"]>[0]>;
+// `Parameters<>` collapses provide()'s generic actor map to `{}`, so actors are typed loosely here.
+type Implementations<TLogic extends AnyStateMachine> = Omit<NonNullable<Parameters<TLogic["provide"]>[0]>, "actors"> & {
+  actors?: Record<string, AnyActorLogic>;
+};
 
 export type DurableMachineOptions<TLogic extends AnyStateMachine> = Implementations<TLogic> & {
   /**
