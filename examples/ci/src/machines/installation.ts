@@ -95,7 +95,7 @@ export const installationMachine = setup({
                 "scm.event": ({ context, event, actions }, enq) => {
                   const accounts = accountsFor(context, event.event);
                   for (const accountId of accounts) enq(actions.toAccount, { accountId, event: event.event });
-                  const next = { ...context, tokenExpiresAt: Date.now() + TOKEN_TTL };
+                  const next = { ...context, tokenExpiresAt: event.event.receivedAt + TOKEN_TTL };
                   return { target: "token_valid", context: route(next, event.event, accounts, accounts.length ? null : "No account uses this repo") };
                 },
               },
@@ -118,7 +118,7 @@ export const installationMachine = setup({
                 "scm.event": ({ context, event, actions }, enq) => {
                   const accounts = accountsFor(context, event.event);
                   for (const accountId of accounts) enq(actions.toAccount, { accountId, event: event.event });
-                  const next = { ...context, tokenExpiresAt: Date.now() + TOKEN_TTL };
+                  const next = { ...context, tokenExpiresAt: event.event.receivedAt + TOKEN_TTL };
                   return { target: "token_valid", context: route(next, event.event, accounts, accounts.length ? null : "No account uses this repo") };
                 },
               },

@@ -97,6 +97,7 @@ const normalize = (kind: string | null, deliveryId: string, payload: unknown) =>
         message: push.head_commit?.message ?? "",
         author: push.sender.login,
         deleted: push.deleted,
+        receivedAt: Date.now(),
       };
       return { kind: "scm", event } satisfies Normalized;
     }
@@ -118,6 +119,7 @@ const normalize = (kind: string | null, deliveryId: string, payload: unknown) =>
         author: pr.sender.login,
         merged: pr.pull_request.merged,
         fromFork: pr.pull_request.head.repo.fork && pr.pull_request.head.repo.full_name !== pr.repository.full_name,
+        receivedAt: Date.now(),
       };
       return { kind: "scm", event } satisfies Normalized;
     }

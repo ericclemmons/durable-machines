@@ -13,6 +13,8 @@ export const PushEvent = Schema.Struct({
   message: Schema.String,
   author: Schema.String,
   deleted: Schema.Boolean,
+  /** When the webhook Worker received it. Machines read time from events, never the clock. */
+  receivedAt: Schema.Number,
 });
 
 export const PullRequestEvent = Schema.Struct({
@@ -30,6 +32,7 @@ export const PullRequestEvent = Schema.Struct({
   merged: Schema.Boolean,
   /** Head branch lives in a fork. Pushes to forks never reach us as `push` events. */
   fromFork: Schema.Boolean,
+  receivedAt: Schema.Number,
 });
 
 export const ScmEvent = Schema.Union([PushEvent, PullRequestEvent]);

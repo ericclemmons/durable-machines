@@ -39,7 +39,7 @@ type AccountContext = typeof AccountContext.Type;
 export type ToProject =
   | { type: "scm.event"; event: ScmEvent }
   | { type: "build.start"; buildId: string; at: number }
-  | { type: "build.completed"; buildId: string; result: { outcome: "failed"; error: string; step: null; at: number } };
+  | { type: "build.completed"; buildId: string; result: { outcome: "failed"; error: string; step: null } };
 
 /** Starts the BuildWorkflow for a ticket. The Account DO provides the real implementation. */
 export const dispatchBuild = createAsyncLogic<{ startedAt: number }, Ticket & { accountId: string }>({
@@ -247,7 +247,7 @@ export const accountMachine = setup({
                 event: {
                   type: "build.completed",
                   buildId: ticket.buildId,
-                  result: { outcome: "failed", error: `Dispatch failed: ${String(event.error)}`, step: null, at: Date.now() },
+                  result: { outcome: "failed", error: `Dispatch failed: ${String(event.error)}`, step: null },
                 },
               });
               return { target: "scheduling", context: finished(context, ticket.buildId, "failed") };
