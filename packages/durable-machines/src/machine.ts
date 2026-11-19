@@ -1,14 +1,18 @@
-import { RpcTarget } from "cloudflare:workers";
+import { RpcTarget, type DurableObject } from "cloudflare:workers";
 import {
+  Lifecycle,
   LifecycleCapability,
+  type DurableObjectCapability,
   type LifecycleJobContext,
   type LifecycleJobOutcome,
 } from "agents/lifecycle";
+import { WebSockets } from "agents/websockets";
 import { Effect, Exit } from "effect";
 import {
   createActor,
   machineToJSON,
   type Actor,
+  type AnyActorLogic,
   type AnyStateMachine,
   type EventFromLogic,
   type InputFrom,
@@ -42,20 +46,27 @@ type Saved = { snapshot: unknown; journal: JournalEntry[]; seq: number; inbox: s
 type Delivery = { binding: string; name: string; event: AnyEvent; envelope: Envelope };
 type Receiver = { send(event: AnyEvent, envelope?: Envelope): Promise<SendResult> };
 
-export type DurableMachineOptions<TLogic extends AnyStateMachine> = {
-  /** The machine this Durable Object runs. One actor per object. */
-  logic: TLogic;
-  /** Input for a fresh actor, from the object's name. */
-  input: (name: string) => InputFrom<TLogic>;
-  /** Bindings used by `deliver()`. Pass `this.env`. */
-  env: object;
+/** What `machine.provide()` takes: `actions`, `actors`, `guards` and `delays`. */
+// `Parameters<>` collapses provide()'s generic actor map to `{}`, so actors are typed loosely here.
+type Implementations<TLogic extends AnyStateMachine> = Omit<NonNullable<Parameters<TLogic["provide"]>[0]>, "actors"> & {
+  actors?: Record<string, AnyActorLogic>;
+};
+
+export type DurableMachineOptions<TLogic extends AnyStateMachine> = Implementations<TLogic> & {
+  /**
+   * Input for a fresh actor. It gets the object's name, so `getByName("order-42")`
+   * starts an order machine for order 42. Called once, the first time the object
+   * starts; after that the actor is restored from storage.
+   */
+  input?: (name: string) => InputFrom<TLogic>;
   /** Machines of spawned children, so clients can draw them. */
   children?: Record<string, AnyStateMachine>;
-  /** Event types WebSocket clients may send. Defaults to none. */
+  /** Event types WebSocket clients may send. Defaults to none: clients only watch. */
   clientEvents?: ReadonlyArray<EventFromLogic<TLogic>["type"]>;
-  /** Sends a frame to every connected client. Wire it to the WebSockets capability. */
-  broadcast?: (frame: string) => void;
+  /** How many journal entries to keep. Defaults to 120. */
   journalSize?: number;
+  /** Delay, in ms, before each outbox message is sent, so people can watch it travel. Defaults to 0. */
+  pace?: number;
   /** The debugger clock. While it is paused, hops park there until released. */
   park?: (request: ParkRequest) => Promise<ParkResult>;
 };
@@ -76,6 +87,11 @@ export type DurableMachineOptions<TLogic extends AnyStateMachine> = {
  */
 export class DurableMachine<TLogic extends AnyStateMachine> extends LifecycleCapability {
   readonly #options: DurableMachineOptions<TLogic>;
+  readonly #logic: TLogic;
+  readonly #env: Record<string, unknown>;
+  readonly #host: Lifecycle;
+  /** Serves `/agents/*` WebSocket connections: clients get the view on connect, then commits. */
+  readonly webSockets: WebSockets;
   readonly #definitions: Record<string, unknown>;
   #actor: Actor<TLogic> | undefined;
   #journal: JournalEntry[] = [];
@@ -96,11 +112,27 @@ export class DurableMachine<TLogic extends AnyStateMachine> extends LifecycleCap
   #clock: ClockSettings = { playing: true, pace: 0 };
   #holds = new Map<string, () => void>();
 
-  constructor(options: DurableMachineOptions<TLogic>) {
+  /**
+   * Run `logic` in the Durable Object `host`. Call it from a field initializer:
+   *
+   * ```ts
+   * readonly machine = new DurableMachine(this, orderMachine, { input: (id) => ({ orderId: id }) });
+   * ```
+   *
+   * `actions`, `actors`, `guards` and `delays` are passed to `logic.provide()`.
+   * The machine installs the object's Lifecycle and WebSocket handling itself.
+   */
+  constructor(host: DurableObject<object>, logic: TLogic, options: DurableMachineOptions<TLogic> = {} as DurableMachineOptions<TLogic>) {
     super("xstate");
+    const { actions, actors, guards, delays } = options as { actions?: unknown; actors?: unknown; guards?: unknown; delays?: unknown };
     this.#options = options;
+    this.#logic = (actions || actors || guards || delays ? logic.provide({ actions, actors, guards, delays } as never) : logic) as TLogic;
+    this.#env = (host as unknown as { env: Record<string, unknown> }).env;
+    this.#clock = { playing: true, pace: options.pace ?? 0 };
+    this.webSockets = new WebSockets({ state: this, callables: new MachineCallables(this as never) });
+    this.#host = Lifecycle.install(host).use(this).use(this.webSockets);
     this.#definitions = Object.fromEntries(
-      [[options.logic.id, options.logic] as const, ...Object.entries(options.children ?? {})].map(
+      [[logic.id, logic] as const, ...Object.entries((options.children ?? {}) as Record<string, AnyStateMachine>)].map(
         ([key, machine]) => [key, machineToJSON(machine)],
       ),
     );
@@ -113,10 +145,30 @@ export class DurableMachine<TLogic extends AnyStateMachine> extends LifecycleCap
     this.#boot();
   }
 
+  /** Add another Lifecycle capability to the object. Call it before the object starts. */
+  use(capability: DurableObjectCapability): this {
+    this.#host.use(capability);
+    return this;
+  }
+
+  /** Start the object. Every method here calls it; RPC calls bypass `fetch`, so this is how the object wakes. */
+  start(): Promise<void> {
+    return this.#host.start();
+  }
+
   /** The running actor. Prefer `send()`, which also persists and reports rejections. */
   get actor(): Actor<TLogic> {
     if (!this.#actor) throw new Error("DurableMachine has not started");
     return this.#actor;
+  }
+
+  /** The root actor's current snapshot. */
+  get snapshot(): ReturnType<Actor<TLogic>["getSnapshot"]> {
+    return this.actor.getSnapshot();
+  }
+
+  #broadcast(frame: string) {
+    for (const connection of this.webSockets.getConnections()) connection.send(frame);
   }
 
   get #self() {
@@ -129,6 +181,7 @@ export class DurableMachine<TLogic extends AnyStateMachine> extends LifecycleCap
    * without being processed again.
    */
   async send(event: EventFromLogic<TLogic>, envelope?: Envelope): Promise<SendResult> {
+    await this.start();
     await this.lifecycle.ready();
     if (envelope && this.#inbox.includes(envelope.messageId)) {
       this.#record({ kind: "duplicate", actor: this.actor.id, event, from: null, to: null, source: envelope.from });
@@ -205,6 +258,7 @@ export class DurableMachine<TLogic extends AnyStateMachine> extends LifecycleCap
 
   /** Called by the clock. Resuming play releases everything this object parked. */
   async setClock(settings: ClockSettings): Promise<void> {
+    await this.start();
     this.#clock = settings;
     this.lifecycle.storage.kv.put(CLOCK_KEY, settings);
     if (!settings.playing) return;
@@ -215,6 +269,7 @@ export class DurableMachine<TLogic extends AnyStateMachine> extends LifecycleCap
 
   /** Let one parked hop run now. False when nothing here waits for it. */
   async release(token: string): Promise<boolean> {
+    await this.start();
     const resume = this.#holds.get(token);
     if (resume) {
       this.#holds.delete(token);
@@ -238,6 +293,7 @@ export class DurableMachine<TLogic extends AnyStateMachine> extends LifecycleCap
 
   /** Discard the actor and its history, then start a fresh one. */
   async reset(): Promise<void> {
+    await this.start();
     await this.lifecycle.ready();
     this.#actor?.stop();
     for (const job of this.lifecycle.jobs.list()) await this.lifecycle.jobs.cancel(job.id);
@@ -245,8 +301,14 @@ export class DurableMachine<TLogic extends AnyStateMachine> extends LifecycleCap
     this.#wakeAt = undefined;
     this.#boot();
     await this.#drain();
-    this.#options.broadcast?.(JSON.stringify({ type: "xstate.reset", view: this.#view() } satisfies MachineReset));
+    this.#broadcast(JSON.stringify({ type: "xstate.reset", view: this.#view() } satisfies MachineReset));
     this.#markSent();
+  }
+
+  /** Everything a client draws: definitions, snapshots, journal and outbox. */
+  async view(): Promise<MachineView> {
+    await this.start();
+    return this.#view();
   }
 
   // SyncedState: the full view goes to each client once, on connect.
@@ -272,7 +334,7 @@ export class DurableMachine<TLogic extends AnyStateMachine> extends LifecycleCap
     const delivery = job.payload as Delivery;
     const { binding, name, event, envelope } = delivery;
     const target = `${binding}/${name}`;
-    const namespace = (this.#options.env as Record<string, DurableObjectNamespace>)[binding];
+    const namespace = this.#env[binding] as DurableObjectNamespace | undefined;
     if (!namespace) return this.#deadLetter(delivery, `Unknown binding ${binding}`, job.id);
 
     const exit = await Effect.runPromiseExit(
@@ -356,11 +418,11 @@ export class DurableMachine<TLogic extends AnyStateMachine> extends LifecycleCap
     this.#inbox = saved?.inbox ?? [];
     this.#deadLetters = saved?.deadLetters ?? 0;
     this.#clock = this.lifecycle.storage.kv.get<ClockSettings>(CLOCK_KEY) ?? this.#clock;
-    const { logic } = this.#options;
+    const logic = this.#logic;
     this.#actor = (
       saved
         ? restoreActor(logic, saved.snapshot as never, options as never)
-        : createActor(logic, { ...options, input: this.#options.input(this.lifecycle.name) } as never)
+        : createActor(logic, { ...options, input: this.#options.input?.(this.lifecycle.name) } as never)
     ) as Actor<TLogic>;
     this.#restoring = Boolean(saved);
     this.#actor.start();
@@ -459,7 +521,7 @@ export class DurableMachine<TLogic extends AnyStateMachine> extends LifecycleCap
     const removed = [...this.#prints.keys()].filter((id) => !live.has(id));
     if (!entries.length && !changed.length && !removed.length) return;
     this.#markSent(actors);
-    this.#options.broadcast?.(
+    this.#broadcast(
       JSON.stringify({
         type: "xstate.commit",
         entries,
@@ -498,8 +560,8 @@ export class DurableMachine<TLogic extends AnyStateMachine> extends LifecycleCap
   #actors(): ActorView[] {
     const persisted = toJSON(this.actor.getPersistedSnapshot()) as unknown as PersistedLike;
     const root: ActorView = {
-      id: this.#options.logic.id,
-      src: this.#options.logic.id,
+      id: this.#logic.id,
+      src: this.#logic.id,
       value: persisted.value,
       status: persisted.status,
       context: persisted.context ?? {},
@@ -529,7 +591,7 @@ export class DurableMachine<TLogic extends AnyStateMachine> extends LifecycleCap
     return {
       name: this.lifecycle.name,
       className: this.lifecycle.className,
-      machineId: this.#options.logic.id,
+      machineId: this.#logic.id,
       definitions: this.#definitions,
       root: root!,
       children,

@@ -8,7 +8,10 @@ once, then receives only events.
 pnpm install      # from the repository root
 pnpm dev           # http://localhost:5173
 pnpm check         # tsc + graph coverage check
+pnpm run deploy    # cf deploy, to durable-machines-ci on workers.dev
 ```
+
+Deploys use [`cf`](https://developers.cloudflare.com/cf/) and [`cloudflare.config.ts`](cloudflare.config.ts), not Wrangler. The app is served at `/` of its own Worker, so the docs can embed it in an iframe.
 
 The UI uses the [Kumo](https://kumo-ui.com) design system (`@cloudflare/kumo`) and its colour tokens.
 
@@ -67,22 +70,17 @@ Every build ends in a final state (`succeeded`, `failed`, `canceled`, `supersede
 
 ## The reusable part: `DurableMachine`
 
-[`packages/durable-machines/src/machine.ts`](../../packages/durable-machines/src/machine.ts) is a Lifecycle capability, like `State` or `Scheduler` from `agents`. Host code never touches `ctx.storage`, SQL, or Durable Object errors:
+[`packages/durable-machines/src/machine.ts`](../../packages/durable-machines/src/machine.ts) is a Lifecycle capability, like `State` or `Scheduler` from `agents`. It installs the object's Lifecycle and WebSocket handling itself, and every method starts the object, so RPC methods are one-liners. Host code never touches `ctx.storage`, SQL, or Durable Object errors:
 
 ```ts
 export class Account extends DurableObject<Env> {
-  readonly machine = new DurableMachine({
-    logic: accountMachine.provide({ actions: { toProject: ({ projectId, event }) => this.machine.deliver("Project", projectId, event) } }),
+  readonly machine = new DurableMachine(this, accountMachine, {
+    actions: { toProject: ({ projectId, event }) => this.machine.deliver("Project", projectId, event) },
     input: (name) => ({ accountId: name, ... }),
-    env: this.env,
     clientEvents: ["entitlements.refresh"],
-    broadcast: (frame) => { for (const c of this.webSockets.getConnections()) c.send(frame); },
   });
-  readonly webSockets = new WebSockets({ state: this.machine, callables: new MachineCallables(this.machine) });
-  readonly lifecycle = Lifecycle.install(this).use(this.machine).use(this.webSockets);
 
-  async send(event: EventFromLogic<typeof accountMachine>, envelope?: Envelope) {
-    await this.lifecycle.start();
+  send(event: EventFromLogic<typeof accountMachine>, envelope?: Envelope) {
     return this.machine.send(event, envelope);
   }
 }
@@ -113,7 +111,7 @@ The same `do-call.ts` is used by the webhook Worker and the BuildWorkflow. The W
 ## Useful endpoints
 
 - `POST /api/simulate`: build and sign a GitHub payload, then run it through the real webhook pipeline. `{ replay: { githubEvent, deliveryId, payload } }` redelivers an earlier one.
-- `POST /webhooks/github`: the real webhook. The secret is `GITHUB_WEBHOOK_SECRET` in `wrangler.jsonc`.
+- `POST /webhooks/github`: the real webhook. The secret is `GITHUB_WEBHOOK_SECRET` in `cloudflare.config.ts`.
 - `POST /api/chaos { target: "Project/free-web", mode: "overloaded" | "retryable" | null, seconds }`: make a DO throw the runtime's errors, to watch the outbox recover.
 - `GET /api/view/{installation|account|project}/:name`: a DO's current view, as JSON.
 - `POST /api/reset`: reset every DO.

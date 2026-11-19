@@ -1,0 +1,109 @@
+---
+title: Get started
+description: Install Durable Machines and run your first machine in a Durable Object.
+sidebar:
+  order: 1
+  group:
+    label: SDK
+---
+
+## Install
+
+<PackageManagers pkg="durable-machines xstate@beta agents effect" />
+
+`xstate`, `agents` and `effect` are peer dependencies. `agents` provides the Durable Object lifecycle and WebSocket handling that `DurableMachine` uses.
+
+## 1. Write a machine
+
+Any XState v6 machine works. This one waits 15 minutes for payment:
+
+```ts title="src/machines/order.ts"
+import { createMachine } from "xstate";
+
+export const orderMachine = createMachine({
+  id: "order",
+  context: ({ input }: { input: { orderId: string } }) => ({ orderId: input.orderId }),
+  initial: "pending",
+  states: {
+    pending: {
+      on: { pay: { target: "paid" } },
+      after: { 900_000: { target: "expired" } },
+    },
+    paid: { type: "final" },
+    expired: { type: "final" },
+  },
+});
+```
+
+## 2. Run it in a Durable Object
+
+```ts title="src/order.ts"
+import { DurableObject } from "cloudflare:workers";
+import type { EventFromLogic } from "xstate";
+import { DurableMachine, type Envelope } from "durable-machines";
+import { orderMachine } from "./machines/order";
+
+export class Order extends DurableObject<Env> {
+  machine = new DurableMachine(this, orderMachine, {
+    input: (orderId) => ({ orderId }),
+  });
+
+  send(event: EventFromLogic<typeof orderMachine>, envelope?: Envelope) {
+    return this.machine.send(event, envelope);
+  }
+}
+```
+
+One object is one order. `input` runs once, the first time the object starts, and gets the object's name. After that, the machine is restored from storage. The 15-minute timer survives eviction: the object wakes up to fire it.
+
+## 3. Send it events
+
+```ts title="src/index.ts"
+import { routeAgentRequest } from "agents/routing";
+
+export { Order } from "./order";
+
+export default {
+  async fetch(request, env) {
+    const url = new URL(request.url);
+    if (url.pathname === "/pay") {
+      const result = await env.Order.getByName("order-42").send({ type: "pay" });
+      return Response.json(result); // { ok: true, value: "paid" }
+    }
+    // WebSocket clients, such as the Inspector, connect at /agents/order/order-42.
+    return (await routeAgentRequest(request, env)) ?? new Response("Not found", { status: 404 });
+  },
+} satisfies ExportedHandler<Env>;
+```
+
+`send()` waits until the transition is saved. It returns `{ ok: false, error }` when the machine rejects the event, for example when it fails the machine's event schema.
+
+## 4. Configure the Worker
+
+```ts title="cloudflare.config.ts"
+import { bindings, defineConfig, exports } from "cf/config";
+
+export default defineConfig({
+  worker: {
+    name: "orders",
+    compatibilityDate: "2026-11-01",
+    compatibilityFlags: ["nodejs_compat"],
+    entrypoint: "src/index.ts",
+    exports: { Order: exports.durableObject({ storage: "sqlite" }) },
+    env: { Order: bindings.durableObject({ worker: "orders", exportName: "Order" }) },
+  },
+});
+```
+
+Then run it with [`cf`](https://developers.cloudflare.com/cf/):
+
+```sh
+cf dev
+cf deploy
+```
+
+## Next
+
+- [DurableMachine](/sdk/durable-machine/): every option and method.
+- [Messages between objects](/sdk/messages/): `deliver()`, the outbox and dead letters.
+- [Inspector](/sdk/inspector/): watch it all live.

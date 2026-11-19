@@ -1,0 +1,38 @@
+{
+  "name": "@durable-machines/example-bank",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "cf dev",
+    "build": "pnpm --filter @durable-machines/docs build && cf build",
+    "deploy": "pnpm --filter @durable-machines/docs build && cf deploy",
+    "typecheck": "tsc --noEmit",
+    "cf-typegen": "cf workers types",
+    "check:graph": "jiti scripts/check-graph.ts",
+    "check": "tsc --noEmit && pnpm check:graph"
+  },
+  "dependencies": {
+    "@cloudflare/kumo": "^2.19.0",
+    "@phosphor-icons/react": "^2.1.10",
+    "agents": "^0.33.0",
+    "durable-machines": "workspace:*",
+    "effect": "^4.1.4",
+    "elkjs": "^0.12.1",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "xstate": "^6.0.0-beta.3"
+  },
+  "devDependencies": {
+    "@cloudflare/vite-plugin": "^2.0.0-rc.1",
+    "@cloudflare/workers-types": "^5.20261118.1",
+    "@tailwindcss/vite": "^4.3.5",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.3.0",
+    "cf": "1.0.0-rc.1",
+    "jiti": "^2.7.0",
+    "tailwindcss": "^4.3.5",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.8"
+  }
+}

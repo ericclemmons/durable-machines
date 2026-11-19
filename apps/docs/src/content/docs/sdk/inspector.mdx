@@ -2,11 +2,11 @@
 title: Inspector
 description: Watch every machine in your system, live.
 sidebar:
-  order: 1
+  order: 5
 ---
 
 <Aside type="note" title="Planned">
-  This page describes the Inspector as designed. Today the visualizer lives inside `examples/ci`; it is being moved into the package.
+  This page describes the Inspector as designed. Today the visualizer lives inside each example, in `examples/*/src/app`. It is being moved into the package.
 </Aside>
 
 The Inspector draws each machine from its definition (`machineToJSON`), lays it out with ELK, and lights up transitions as they happen. It shows every object your system reaches on one map, with outbox messages as wires between them.

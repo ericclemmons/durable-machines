@@ -1,0 +1,71 @@
+---
+title: DurableMachine
+description: The options and methods of DurableMachine.
+sidebar:
+  order: 3
+---
+
+```ts
+new DurableMachine(host, machine, options?)
+```
+
+Create it in a field of your Durable Object class, passing `this` as `host`. It installs everything the object needs: storage, alarms, and WebSocket handling for clients. One object runs one machine.
+
+```ts
+export class Transfer extends DurableObject<Env> {
+  machine = new DurableMachine(this, transferMachine, {
+    input: (transferId) => ({ transferId }),
+    actions: {
+      toAccount: ({ accountId, event }) => this.machine.deliver("Account", accountId, event),
+    },
+  });
+}
+```
+
+## Options
+
+### `input`
+
+`(name: string) => Input`. Builds the machine's input from the object's name, so `env.Transfer.getByName("t-42")` starts a transfer machine for `t-42`. It runs once, when the object starts for the first time. After that the machine is restored from storage and `input` isn't called again. Leave it out if the machine takes no input.
+
+### `actions`, `actors`, `guards`, `delays`
+
+Implementations for the machine. They're passed to [`machine.provide()`](https://stately.ai/docs), so these two are the same:
+
+```ts
+new DurableMachine(this, transferMachine, { actions: { toAccount } });
+new DurableMachine(this, transferMachine.provide({ actions: { toAccount } }));
+```
+
+Use them for anything that touches the outside world. A machine declares an action, such as `toAccount`, and the object implements it, usually with `this.machine.deliver()`. That keeps the machine free of Cloudflare code, so you can test it on its own.
+
+### Other options
+
+| Option | Default | What it does |
+| --- | --- | --- |
+| `clientEvents` | `[]` | Event types WebSocket clients may send. By default, clients can only watch. |
+| `children` | `{}` | Machines this one spawns, by `src`, so clients can draw them. |
+| `journalSize` | `120` | How many recent events the object keeps for clients. |
+| `pace` | `0` | Milliseconds to wait before each outgoing message, so people can watch it travel. |
+| `park` | none | Hands each outgoing message to a debugger clock, which can hold it until you step. |
+
+## Methods
+
+| Method | What it does |
+| --- | --- |
+| `send(event, envelope?)` | Process one event and save the result. Resolves to `{ ok: true, value }` or `{ ok: false, error }`. Pass the `envelope` through from your RPC method: it carries the message id that lets the object drop repeats. |
+| `deliver(binding, name, event)` | Send an event to the object `env[binding].getByName(name)`. Call it from an action. See [Messages](/sdk/messages/). |
+| `snapshot` | The machine's current snapshot. |
+| `view()` | Everything a client draws: the machine definitions, snapshots, recent events and pending messages. |
+| `reset()` | Throw the machine and its history away, and start it again from `input`. |
+| `use(capability)` | Add another [Lifecycle](https://developers.cloudflare.com/agents/) capability to the object. |
+
+## Why an RPC method?
+
+Workers call a Durable Object through the methods on its class. `DurableMachine` can't add methods to your class, so you write the ones you want to expose. Usually that's one:
+
+```ts
+send(event: EventFromLogic<typeof transferMachine>, envelope?: Envelope) {
+  return this.machine.send(event, envelope);
+}
+```
