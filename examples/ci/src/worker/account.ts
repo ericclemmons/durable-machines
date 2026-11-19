@@ -54,7 +54,13 @@ export class Account extends DurableObject<Env> {
       }),
     },
     actions: {
-      toProject: ({ projectId, event }) => this.machine.deliver("Project", projectId, event),
+      // Transitions are pure, so the time a failure is reported is stamped here, in the effect.
+      toProject: ({ projectId, event }) =>
+        this.machine.deliver(
+          "Project",
+          projectId,
+          event.type === "build.completed" ? { ...event, result: { ...event.result, at: Date.now() } } : event,
+        ),
     },
     input: (name) => {
       const account = accounts[name];

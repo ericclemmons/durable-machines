@@ -161,7 +161,7 @@ export const projectMachine = setup({
       "build.reject": std(Schema.Struct({ buildId: Schema.String })),
       "build.cancel": std(Schema.Struct({ buildId: Schema.String })),
       "build.start": std(Schema.Struct({ buildId: Schema.String, at: Schema.Number })),
-      "build.step": std(Schema.Struct({ buildId: Schema.String, step: BuildStep, command: Schema.String })),
+      "build.step": std(Schema.Struct({ buildId: Schema.String, step: BuildStep, command: Schema.String, at: Schema.Number })),
       "settings.update": std(Schema.Struct({ settings: ProjectSettings })),
       "build.completed": std(Schema.Struct({ buildId: Schema.String, result: BuildCompleted })),
       "build.settled": std(Schema.Struct({ buildId: Schema.String, ...Settled })),
@@ -277,7 +277,7 @@ export const projectMachine = setup({
     "build.step": ({ event, children }, enq) => {
       // A build that was canceled or superseded is gone; its Workflow may still report.
       const child = children[event.buildId];
-      if (child) enq.sendTo(child, { type: "build.step", step: event.step, command: event.command });
+      if (child) enq.sendTo(child, { type: "build.step", step: event.step, command: event.command, at: event.at });
     },
     "build.completed": ({ event, children }, enq) => {
       // A build that was canceled or superseded is gone; its Workflow may still report.

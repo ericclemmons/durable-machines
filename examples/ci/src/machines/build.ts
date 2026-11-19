@@ -50,7 +50,7 @@ export const buildMachine = setup({
       "build.approve": std(Schema.Struct({ by: Schema.String })),
       "build.reject": std(Schema.Struct({ by: Schema.String })),
       "build.started": std(Schema.Struct({ at: Schema.Number })),
-      "build.step": std(Schema.Struct({ step: BuildStep, command: Schema.String })),
+      "build.step": std(Schema.Struct({ step: BuildStep, command: Schema.String, at: Schema.Number })),
       "build.completed": std(BuildCompleted),
       "build.cancel": std(Schema.Struct({ reason: Schema.String })),
       "build.supersede": std(Schema.Struct({ by: Schema.String })),
@@ -82,7 +82,7 @@ export const buildMachine = setup({
         // The Workflow and the Account report on separate paths, so the first step can beat build.started.
         "build.step": ({ context, event }) =>
           event.step === "clone"
-            ? { target: "running.cloning", context: { ...context, step: event.step, command: event.command, startedAt: context.startedAt ?? Date.now() } }
+            ? { target: "running.cloning", context: { ...context, step: event.step, command: event.command, startedAt: context.startedAt ?? event.at } }
             : undefined,
         "build.supersede": ({ context, event }) => ({ target: "superseded", context: { ...context, error: `Superseded by ${event.by}` } }),
         "build.cancel": ({ context, event }) => ({ target: "canceled", context: { ...context, error: event.reason } }),

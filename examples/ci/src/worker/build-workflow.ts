@@ -59,7 +59,7 @@ export class BuildWorkflow extends WorkflowEntrypoint<Env, BuildParams> {
         // No build command: go straight from install to deploy.
         if (name === "build" && !build.commands.build) continue;
         current = name;
-        await report(`report ${name}`, { type: "build.step", buildId: build.buildId, step: name, command: commandFor(build, name) });
+        await report(`report ${name}`, { type: "build.step", buildId: build.buildId, step: name, command: commandFor(build, name), at: Date.now() });
         // The debugger clock: paused, the step waits for "next"; playing, it runs with the pace added.
         const after = name === "deploy" ? "build.completed" : "build.step";
         const clock = await step.do(`clock ${name}`, async () => {
