@@ -1,0 +1,50 @@
+{
+  "name": "durable-machines",
+  "version": "0.0.0",
+  "description": "XState machines in Durable Objects that you can watch live.",
+  "license": "MIT",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ericclemmons/durable-machines.git",
+    "directory": "packages/durable-machines"
+  },
+  "keywords": ["xstate", "statecharts", "durable-objects", "cloudflare", "workers", "state-machine"],
+  "sideEffects": false,
+  "exports": {
+    ".": "./src/index.ts",
+    "./protocol": "./src/protocol.ts",
+    "./clock": "./src/clock.ts",
+    "./graph": "./src/graph-coverage.ts",
+    "./package.json": "./package.json"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true,
+    "exports": {
+      ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" },
+      "./protocol": { "types": "./dist/protocol.d.ts", "default": "./dist/protocol.js" },
+      "./clock": { "types": "./dist/clock.d.ts", "default": "./dist/clock.js" },
+      "./graph": { "types": "./dist/graph-coverage.d.ts", "default": "./dist/graph-coverage.js" },
+      "./package.json": "./package.json"
+    }
+  },
+  "files": ["dist", "src"],
+  "scripts": {
+    "build": "rm -rf dist && tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "prepack": "pnpm run build"
+  },
+  "peerDependencies": {
+    "agents": "^0.33.0",
+    "effect": "^4.1.4",
+    "xstate": "^6.0.0-beta.3"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20261118.1",
+    "agents": "^0.33.0",
+    "effect": "^4.1.4",
+    "typescript": "^7.0.2",
+    "xstate": "^6.0.0-beta.3"
+  }
+}

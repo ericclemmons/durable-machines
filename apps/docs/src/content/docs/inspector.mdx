@@ -1,0 +1,33 @@
+---
+title: Inspector
+description: Watch every machine in your system, live.
+sidebar:
+  order: 1
+---
+
+<Aside type="note" title="Planned">
+  This page describes the Inspector as designed. Today the visualizer lives inside `examples/ci`; it is being moved into the package.
+</Aside>
+
+The Inspector draws each machine from its definition (`machineToJSON`), lays it out with ELK, and lights up transitions as they happen. It shows every object your system reaches on one map, with outbox messages as wires between them.
+
+## How it connects
+
+Each Durable Machine speaks one small protocol over a WebSocket:
+
+- **On connect**, the object sends one `MachineView`: its machine definitions, current snapshots, recent journal and pending outbox.
+- **After every commit**, it sends one `xstate.commit` frame: the events it processed and the snapshots that changed.
+
+Nothing polls. The types are exported from `durable-machines/protocol`.
+
+## Finding objects
+
+Start from any object, by name (`Order/1234`) or by the hex id shown in the Cloudflare dashboard. The Inspector then follows the system on its own:
+
+- Every outbox message names its receiver, and every delivered message names its sender.
+- Each machine keeps the set of objects it has talked to, so the Inspector can open them too, and the objects they talked to, until the whole system is on the map.
+
+## Hosting
+
+- **In your Worker.** Mount the Inspector at `/__machines`. It reaches every Durable Object binding in `env`, so the whole system map works. It only answers on localhost unless you pass an `authorize` function, such as one that checks a Cloudflare Access token.
+- **As its own Worker.** Deploy the Inspector template and bind your Durable Object classes from another Worker with `script_name`. Turn on Cloudflare Access for its route.

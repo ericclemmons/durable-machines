@@ -1,0 +1,14 @@
+{
+  "name": "durable-machines-monorepo",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "pnpm --filter durable-machines build",
+    "check": "pnpm -r --if-present typecheck && pnpm --filter @durable-machines/example-ci check",
+    "dev": "pnpm --filter @durable-machines/example-ci dev"
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "packageManager": "pnpm@12.8.1"
+}

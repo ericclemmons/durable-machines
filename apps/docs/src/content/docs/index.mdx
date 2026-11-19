@@ -1,0 +1,64 @@
+---
+title: Durable Machines
+description: XState machines in Durable Objects that you can watch live.
+sidebar:
+  order: 0
+---
+
+Durable Machines runs one [XState v6](https://stately.ai/docs) actor in each Cloudflare Durable Object, and lets you watch every machine in your system change state as it happens. It is for backends where several objects work together: orders, approvals, pipelines, sign-ups.
+
+<Aside type="caution" title="Early work">
+  The API will change. XState v6 is in beta, and this project tracks it on purpose.
+</Aside>
+
+## Why
+
+XState's own guide to [backend workflows](https://stately.ai/docs) asks for three things: one actor per entity, one event at a time per entity, and an idempotency key on every event. A Durable Object gives you the first two. Durable Machines adds the third, and the rest of the plumbing:
+
+- **Persistence.** The snapshot is saved after every transition and restored when the object wakes.
+- **Durable timers.** `after` and `timeout` wake the object with an alarm, even after eviction.
+- **A transactional outbox.** `deliver()` sends an event to another object. The message is written in the same SQLite transaction as the state that produced it, and receivers drop repeats.
+- **Dead letters.** A message that can't be delivered comes back to the sender as `outbox.failed`, so the machine can compensate.
+- **Diagrams that can't lie.** A machine whose transitions hide their destinations is refused, so the diagram always shows every edge.
+
+Other Durable Object frameworks show you an object's **data**. Durable Machines shows you its **behavior**: the statechart, the current state, the transition that just fired, and the message on its way to the next object.
+
+## A Durable Object with a machine
+
+```ts
+import { DurableObject } from "cloudflare:workers";
+import { Lifecycle } from "agents/lifecycle";
+import { WebSockets } from "agents/websockets";
+import { DurableMachine, MachineCallables } from "durable-machines";
+import { orderMachine } from "./machines/order";
+
+export class Order extends DurableObject<Env> {
+  readonly machine = new DurableMachine({
+    logic: orderMachine.provide({
+      actions: { reserve: (item) => this.machine.deliver("Inventory", item.sku, { type: "reserve", item }) },
+    }),
+    input: (orderId) => ({ orderId }),
+    env: this.env,
+    clientEvents: ["order.cancel"],
+    broadcast: (frame) => {
+      for (const connection of this.webSockets.getConnections()) connection.send(frame);
+    },
+  });
+  readonly webSockets = new WebSockets({ state: this.machine, callables: new MachineCallables(this.machine) });
+  readonly lifecycle = Lifecycle.install(this).use(this.machine).use(this.webSockets);
+
+  async send(event, envelope) {
+    await this.lifecycle.start();
+    return this.machine.send(event, envelope);
+  }
+}
+```
+
+## Run the example
+
+```sh
+pnpm install
+pnpm dev
+```
+
+The example in `examples/ci` is a small CI system: a webhook reaches a repository, which fans out to accounts and projects, which queue and run builds. Press play and watch the messages move between objects.

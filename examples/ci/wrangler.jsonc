@@ -1,0 +1,34 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "durable-machines-example-ci",
+  "main": "src/worker/index.ts",
+  "compatibility_date": "2026-11-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "assets": {
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/agents/*", "/api/*", "/webhooks/*"]
+  },
+  "durable_objects": {
+    "bindings": [
+      { "name": "Account", "class_name": "Account" },
+      { "name": "Project", "class_name": "Project" },
+      { "name": "Installation", "class_name": "Installation" },
+      { "name": "Clock", "class_name": "Clock" }
+    ]
+  },
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["Account", "Project"] },
+    { "tag": "v2", "new_sqlite_classes": ["Installation"] },
+    { "tag": "v3", "new_sqlite_classes": ["Clock"] }
+  ],
+  "workflows": [
+    {
+      "name": "build-workflow",
+      "binding": "BUILD_WORKFLOW",
+      "class_name": "BuildWorkflow"
+    }
+  ],
+  "vars": {
+    "GITHUB_WEBHOOK_SECRET": "demo-webhook-secret"
+  }
+}

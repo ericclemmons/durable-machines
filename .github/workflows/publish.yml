@@ -1,0 +1,24 @@
+name: Publish
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+permissions:
+  contents: read
+  id-token: write
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: pnpm
+          registry-url: https://registry.npmjs.org
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm check
+      # pnpm pack applies publishConfig (dist exports); npm publish does the OIDC exchange.
+      - run: pnpm --filter durable-machines pack --pack-destination "$RUNNER_TEMP"
+      - run: npm publish "$RUNNER_TEMP"/durable-machines-*.tgz --access public
