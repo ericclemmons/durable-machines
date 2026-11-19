@@ -9,15 +9,20 @@ import {
 import { WebSockets } from "agents/websockets";
 import { Effect, Exit } from "effect";
 import {
-  createActor,
+  deliverEvent,
   machineToJSON,
+  stopActor,
   type Actor,
+  type AnyActor,
   type AnyActorLogic,
   type AnyStateMachine,
+  type DeadLetterDetail,
   type EventFromLogic,
   type InputFrom,
+  type SnapshotFrom,
+  type TimerKey,
 } from "xstate";
-import { restoreActor } from "xstate/persist";
+import { createDurable, type DurableCheckpoint, type DurableExecution, type DurableExecutionAdapter, type DurableSnapshot } from "xstate/durable";
 import { callDurableObject } from "./do-call.ts";
 import { formatCoverage, graphCoverage } from "./graph-coverage.ts";
 import type {
@@ -37,13 +42,26 @@ import type {
 
 const STORAGE_KEY = "xstate:actor";
 const CLOCK_KEY = "xstate:clock";
+const WAKE_JOB = "xstate-wake";
 // A parked outbox job waits this far out until the clock releases it.
 const PARKED_FOR = 365 * 24 * 3600_000;
 const INBOX_SIZE = 500;
 const OVERLOAD_LIMIT = 8;
 
-type Saved = { snapshot: unknown; journal: JournalEntry[]; seq: number; inbox: string[]; deadLetters: number };
+/** A logical timer the adapter accepted, with the absolute deadline it accepted. */
+type Timer = { address: string; timer: TimerKey; at: number };
+type Saved = {
+  checkpoint: DurableCheckpoint;
+  timers: Record<string, Timer>;
+  journal: JournalEntry[];
+  seq: number;
+  inbox: string[];
+  deadLetters: number;
+};
+// Written by the createActor core: a bare persisted snapshot, timers inside it.
+type Legacy = Omit<Saved, "checkpoint" | "timers"> & { snapshot: unknown };
 type Delivery = { binding: string; name: string; event: AnyEvent; envelope: Envelope };
+type Outgoing = { id: string; delivery: Delivery; time: number; parked: boolean };
 type Receiver = { send(event: AnyEvent, envelope?: Envelope): Promise<SendResult> };
 
 /** What `machine.provide()` takes: `actions`, `actors`, `guards` and `delays`. */
@@ -73,9 +91,13 @@ export type DurableMachineOptions<TLogic extends AnyStateMachine> = Implementati
 
 /**
  * A Lifecycle capability that turns a Durable Object into one durable XState actor.
+ * It is the Durable Object host adapter for XState's `createDurable`.
  *
- * - Restores the actor from storage on wake and persists after every transition.
- * - Wakes the object with a Lifecycle job when an `after` or `timeout` timer is due.
+ * - Drives the pure loop: `restore()` on wake, then `transition()` + `executeEffects()`
+ *   per event. Adapter operations only record intents; one SQLite transaction then
+ *   writes the checkpoint, inbox ids, outbox jobs and the timer wake job.
+ * - `after` and `timeout` timers are `scheduleTimer` calls, kept as absolute
+ *   deadlines and woken by one Lifecycle job at the earliest.
  * - `deliver()` is a transactional outbox: the message is queued as a Lifecycle job
  *   in the same SQLite transaction as the snapshot that produced it. Receivers
  *   deduplicate by message id, so retries are effectively once.
@@ -93,17 +115,25 @@ export class DurableMachine<TLogic extends AnyStateMachine> extends LifecycleCap
   /** Serves `/agents/*` WebSocket connections: clients get the view on connect, then commits. */
   readonly webSockets: WebSockets;
   readonly #definitions: Record<string, unknown>;
-  #actor: Actor<TLogic> | undefined;
+  #durable: DurableExecution<TLogic> | undefined;
+  #state: DurableSnapshot<TLogic> | undefined;
+  #generation = 0;
+  #timers = new Map<string, Timer>();
+  #mailbox: Array<{ event: AnyEvent; source: string | undefined }> = [];
+  #outgoing: Outgoing[] = [];
+  #turn: Promise<unknown> = Promise.resolve();
+  #inTurn = false;
+  #kicked = false;
   #journal: JournalEntry[] = [];
   #seq = 0;
   #inbox: string[] = [];
   #deadLetters = 0;
   #names = new Map<string, string>();
   #lastSnapshot = new Map<string, unknown>();
+  #unhandled = new WeakMap<object, JournalEntry>();
   #pending: Promise<unknown>[] = [];
   #rejection: string | undefined;
   #source: string | undefined;
-  #persistQueued = false;
   #wakeAt: number | undefined;
   #restoring = false;
   #sentSeq = 0;
@@ -141,8 +171,13 @@ export class DurableMachine<TLogic extends AnyStateMachine> extends LifecycleCap
     if (problems.length) throw new Error(`Machine graph is incomplete:\n${problems.join("\n")}`);
   }
 
-  override onStart(): void {
-    this.#boot();
+  override async onStart(): Promise<void> {
+    await this.#exclusive(async () => {
+      await this.#boot();
+      this.#save();
+      this.#markSent();
+    });
+    await this.#drain();
   }
 
   /** Add another Lifecycle capability to the object. Call it before the object starts. */
@@ -156,15 +191,15 @@ export class DurableMachine<TLogic extends AnyStateMachine> extends LifecycleCap
     return this.#host.start();
   }
 
-  /** The running actor. Prefer `send()`, which also persists and reports rejections. */
-  get actor(): Actor<TLogic> {
-    if (!this.#actor) throw new Error("DurableMachine has not started");
-    return this.#actor;
+  /** The current snapshot. Read-only: change it with `send()`. */
+  get snapshot(): SnapshotFrom<TLogic> {
+    if (!this.#state) throw new Error("DurableMachine has not started");
+    return this.#state as SnapshotFrom<TLogic>;
   }
 
-  /** The root actor's current snapshot. */
-  get snapshot(): ReturnType<Actor<TLogic>["getSnapshot"]> {
-    return this.actor.getSnapshot();
+  /** @deprecated Read `snapshot`. There is no live root actor; the host drives pure transitions. */
+  get actor(): Pick<Actor<TLogic>, "id" | "getSnapshot"> {
+    return { id: this.#logic.id, getSnapshot: () => this.snapshot };
   }
 
   #broadcast(frame: string) {
@@ -183,29 +218,22 @@ export class DurableMachine<TLogic extends AnyStateMachine> extends LifecycleCap
   async send(event: EventFromLogic<TLogic>, envelope?: Envelope): Promise<SendResult> {
     await this.start();
     await this.lifecycle.ready();
-    if (envelope && this.#inbox.includes(envelope.messageId)) {
-      this.#record({ kind: "duplicate", actor: this.actor.id, event, from: null, to: null, source: envelope.from });
-      this.#commit();
-      return { ok: true, value: this.#value(), duplicate: true };
-    }
-    this.#rejection = undefined;
-    // Snapshot, journal, inbox and every outbox job the transition queued land in
-    // one SQLite transaction, so a message is never lost or sent without its state.
-    this.lifecycle.storage.transactionSync(() => {
-      this.#source = envelope?.from;
-      try {
-        this.actor.send(event as never);
-      } finally {
-        this.#source = undefined;
+    const result = await this.#exclusive(async (): Promise<SendResult> => {
+      if (envelope && this.#inbox.includes(envelope.messageId)) {
+        this.#record({ kind: "duplicate", actor: this.#logic.id, event, from: null, to: null, source: envelope.from });
+        this.#commit();
+        return { ok: true, value: this.#value(), duplicate: true };
       }
-      if (envelope) this.#inbox = [...this.#inbox, envelope.messageId].slice(-INBOX_SIZE);
-      this.#persist();
+      this.#rejection = undefined;
+      await this.#transact(async () => {
+        await this.#step(event, envelope?.from);
+        if (envelope) this.#inbox = [...this.#inbox, envelope.messageId].slice(-INBOX_SIZE);
+      });
+      if (this.#rejection) return { ok: false, error: this.#rejection };
+      return { ok: true, value: this.#value() };
     });
-    const rejection = this.#rejection;
-    this.#commit();
     await this.#drain();
-    if (rejection) return { ok: false, error: rejection };
-    return { ok: true, value: this.#value() };
+    return result;
   }
 
   /** Send from a WebSocket client. Only `clientEvents` are allowed. */
@@ -218,24 +246,19 @@ export class DurableMachine<TLogic extends AnyStateMachine> extends LifecycleCap
 
   /**
    * Queue an event for the actor in another Durable Object (`env[binding]`,
-   * addressed by name). Call it from action implementations, so it is written
-   * in the same transaction as the transition.
+   * addressed by name). Call it from action implementations: it only records the
+   * message, which is written in the same transaction as the transition.
    */
   deliver(binding: string, name: string, event: AnyEvent): void {
     const messageId = crypto.randomUUID();
-    const id = `msg:${messageId}`;
-    const delivery: Delivery = { binding, name, event: toJSON(event), envelope: { messageId, from: this.#self } };
     const { playing, pace } = this.#clock;
-    const push = this.lifecycle.jobs.push({
-      id,
-      fn: "deliver",
+    this.#outgoing.push({
+      id: `msg:${messageId}`,
+      delivery: { binding, name, event: toJSON(event), envelope: { messageId, from: this.#self } },
       time: Date.now() + (playing ? pace : PARKED_FOR),
-      payload: delivery,
-      retry: { maxAttempts: 5, baseDelayMs: 250, maxDelayMs: 10_000 },
+      parked: !playing,
     });
-    // The row is inserted synchronously; a rejection here means it was not.
-    this.#pending.push(push.catch((error: unknown) => this.#deadLetter(delivery, `Outbox write failed: ${String(error)}`)));
-    if (!playing) this.#pending.push(this.#park({ token: id, to: `${binding}/${name}`, eventType: event.type }));
+    if (!this.#inTurn) this.#kick();
   }
 
   /**
@@ -295,11 +318,13 @@ export class DurableMachine<TLogic extends AnyStateMachine> extends LifecycleCap
   async reset(): Promise<void> {
     await this.start();
     await this.lifecycle.ready();
-    this.#actor?.stop();
-    for (const job of this.lifecycle.jobs.list()) await this.lifecycle.jobs.cancel(job.id);
-    this.lifecycle.storage.kv.delete(STORAGE_KEY);
-    this.#wakeAt = undefined;
-    this.#boot();
+    await this.#exclusive(async () => {
+      for (const job of this.lifecycle.jobs.list()) await this.lifecycle.jobs.cancel(job.id);
+      this.lifecycle.storage.kv.delete(STORAGE_KEY);
+      this.#wakeAt = undefined;
+      await this.#boot();
+      this.#save();
+    });
     await this.#drain();
     this.#broadcast(JSON.stringify({ type: "xstate.reset", view: this.#view() } satisfies MachineReset));
     this.#markSent();
@@ -313,7 +338,7 @@ export class DurableMachine<TLogic extends AnyStateMachine> extends LifecycleCap
 
   // SyncedState: the full view goes to each client once, on connect.
   get(): MachineView | undefined {
-    if (!this.#actor) return undefined;
+    if (!this.#state) return undefined;
     return this.#view();
   }
 
@@ -323,10 +348,9 @@ export class DurableMachine<TLogic extends AnyStateMachine> extends LifecycleCap
 
   async onJob({ job }: LifecycleJobContext): Promise<LifecycleJobOutcome> {
     if (job.fn === "wake") {
-      // Restoring the actor on startup already re-armed due timers.
       this.#wakeAt = undefined;
-      this.#persist();
-      this.#commit();
+      await this.#exclusive(() => this.#transact(() => this.#fireTimers()));
+      await this.#drain();
       return;
     }
     if (job.fn !== "deliver") return;
@@ -344,13 +368,14 @@ export class DurableMachine<TLogic extends AnyStateMachine> extends LifecycleCap
       ),
     );
 
+    const actor = this.#logic.id;
     if (Exit.isSuccess(exit)) {
       this.#overloads.delete(job.id);
       const result = exit.value;
       if (!result.ok) return this.#deadLetter(delivery, `Rejected by ${target}: ${result.error}`, job.id);
       this.#record({
         kind: "delivered",
-        actor: this.actor.id,
+        actor,
         event,
         from: null,
         to: null,
@@ -358,8 +383,10 @@ export class DurableMachine<TLogic extends AnyStateMachine> extends LifecycleCap
         target,
         detail: result.duplicate ? "Duplicate; the receiver already had it" : undefined,
       });
-      this.#persist();
-      this.#commit(job.id);
+      await this.#exclusive(async () => {
+        this.#save();
+        this.#commit(job.id);
+      });
       return;
     }
 
@@ -370,150 +397,309 @@ export class DurableMachine<TLogic extends AnyStateMachine> extends LifecycleCap
       this.#overloads.set(job.id, count);
       if (count > OVERLOAD_LIMIT) return this.#deadLetter(delivery, `${target} stayed overloaded`, job.id);
       const delay = Math.min(60_000, 1_000 * 2 ** count) * (0.5 + Math.random() / 2);
-      this.#record({ kind: "retrying", actor: this.actor.id, event, from: null, to: null, source: this.#self, target, detail: `Overloaded; retry in ${Math.round(delay)} ms` });
-      this.#persist();
-      this.#commit();
+      this.#record({ kind: "retrying", actor, event, from: null, to: null, source: this.#self, target, detail: `Overloaded; retry in ${Math.round(delay)} ms` });
+      await this.#exclusive(async () => {
+        this.#save();
+        this.#commit();
+      });
       return { rescheduleAt: Date.now() + delay };
     }
-    this.#record({ kind: "retrying", actor: this.actor.id, event, from: null, to: null, source: this.#self, target, detail: error?.message ?? "Delivery failed" });
-    this.#persist();
-    this.#commit();
+    this.#record({ kind: "retrying", actor, event, from: null, to: null, source: this.#self, target, detail: error?.message ?? "Delivery failed" });
+    await this.#exclusive(async () => {
+      this.#save();
+      this.#commit();
+    });
     // Lifecycle retries with backoff, then calls onJobError.
     throw new Error(error?.message ?? "Delivery failed");
   }
 
-  onJobError({ job }: LifecycleJobContext, error: unknown): LifecycleJobOutcome {
+  async onJobError({ job }: LifecycleJobContext, error: unknown): Promise<LifecycleJobOutcome> {
     if (job.fn !== "deliver") return;
-    this.#deadLetter(job.payload as Delivery, `Gave up: ${error instanceof Error ? error.message : String(error)}`, job.id);
+    return this.#deadLetter(job.payload as Delivery, `Gave up: ${error instanceof Error ? error.message : String(error)}`, job.id);
   }
 
   /** Journal the failure, then hand it to the machine so the domain can compensate. */
-  #deadLetter({ binding, name, event }: Delivery, reason: string, jobId?: string): undefined {
+  async #deadLetter({ binding, name, event }: Delivery, reason: string, jobId?: string): Promise<undefined> {
     const target = `${binding}/${name}`;
-    this.#deadLetters++;
-    this.#record({ kind: "dead-letter", actor: this.actor.id, event, from: null, to: null, source: this.#self, target, detail: reason });
-    this.lifecycle.storage.transactionSync(() => {
-      this.#source = "outbox";
-      try {
-        this.actor.send({ type: "outbox.failed", target, eventType: event.type, event, reason } as never);
-      } finally {
-        this.#source = undefined;
-      }
-      this.#persist();
+    await this.#exclusive(async () => {
+      this.#deadLetters++;
+      this.#record({ kind: "dead-letter", actor: this.#logic.id, event, from: null, to: null, source: this.#self, target, detail: reason });
+      await this.#transact(() => this.#step({ type: "outbox.failed", target, eventType: event.type, event, reason }, "outbox"), jobId);
     });
-    this.#commit(jobId);
+    await this.#drain();
     return undefined;
   }
 
-  #boot() {
-    const saved = this.lifecycle.storage.kv.get<Saved>(STORAGE_KEY);
-    const options = {
-      inspect: (event: unknown) => this.#onInspect(event as InspectionLike),
-      onRejectedEvent: (rejection: RejectionLike) => this.#onRejected(rejection),
-    };
+  // One turn at a time: `executeEffects` calls must not overlap.
+  #exclusive<T>(fn: () => Promise<T>): Promise<T> {
+    const run = this.#turn.then(async () => {
+      this.#inTurn = true;
+      try {
+        const result = await fn();
+        // Work that arrived while this turn waited on its last batch.
+        if (this.#mailbox.length || this.#outgoing.length) this.#kick();
+        return result;
+      } finally {
+        this.#inTurn = false;
+      }
+    });
+    this.#turn = run.catch(() => {});
+    return run;
+  }
+
+  /** Commit work that arrived outside a turn: a live child moved, or a child reported up. */
+  #kick() {
+    if (this.#kicked) return;
+    this.#kicked = true;
+    this.#exclusive(async () => {
+      this.#kicked = false;
+      await this.#transact(async () => {});
+    })
+      .then(() => this.#drain())
+      .catch((error: unknown) => console.error("DurableMachine: turn failed", error));
+  }
+
+  /**
+   * Run a turn: process the events, then everything the children reported up,
+   * and commit the result in one transaction. A failed turn commits nothing and
+   * reboots from the last checkpoint.
+   */
+  async #transact(body: () => Promise<void>, settled?: string) {
+    try {
+      await body();
+      await this.#settle();
+      this.#save();
+    } catch (error) {
+      await this.#boot();
+      throw error;
+    }
+    this.#commit(settled);
+  }
+
+  async #step(event: AnyEvent, source?: string) {
+    const durable = this.#durable!;
+    this.#source = source;
+    try {
+      const [state, effects] = durable.transition(this.#state as SnapshotFrom<TLogic>, event as EventFromLogic<TLogic>);
+      this.#state = state;
+      await durable.executeEffects(effects);
+    } finally {
+      this.#source = undefined;
+    }
+  }
+
+  async #settle() {
+    for (let next = this.#mailbox.shift(); next; next = this.#mailbox.shift()) await this.#step(next.event, next.source);
+  }
+
+  async #fireTimers() {
+    const durable = this.#durable!;
+    const due = [...this.#timers].filter(([, t]) => t.at <= Date.now()).sort(([, a], [, b]) => a.at - b.at);
+    for (const [key, { address, timer }] of due) {
+      // An earlier firing may have canceled it.
+      if (!this.#timers.delete(key)) continue;
+      const event = { type: "xstate.timer", ...timer } as AnyEvent;
+      const owner = this.#names.get(address) ?? address;
+      if (address === durable.rootAddress) {
+        await this.#step(event, owner);
+        continue;
+      }
+      const ref = durable.getActorRef(this.#state as SnapshotFrom<TLogic>, address);
+      // The child is gone: its timer is stale.
+      if (!ref) continue;
+      this.#source = owner;
+      try {
+        deliverEvent(ref, ref, event);
+      } finally {
+        this.#source = undefined;
+      }
+      await this.#settle();
+    }
+  }
+
+  async #boot() {
+    const generation = ++this.#generation;
+    this.#retire();
+    const live = () => generation === this.#generation;
+    const saved = this.lifecycle.storage.kv.get<Saved | Legacy>(STORAGE_KEY);
     this.#names.clear();
     this.#lastSnapshot.clear();
+    this.#mailbox = [];
+    this.#outgoing = [];
+    this.#timers = new Map(Object.entries(saved && "timers" in saved ? saved.timers : {}));
+    this.#wakeAt = this.lifecycle.jobs.get(WAKE_JOB)?.time;
     this.#journal = saved?.journal ?? [];
     this.#seq = saved?.seq ?? 0;
     this.#inbox = saved?.inbox ?? [];
     this.#deadLetters = saved?.deadLetters ?? 0;
     this.#clock = this.lifecycle.storage.kv.get<ClockSettings>(CLOCK_KEY) ?? this.#clock;
     const logic = this.#logic;
-    this.#actor = (
-      saved
-        ? restoreActor(logic, saved.snapshot as never, options as never)
-        : createActor(logic, { ...options, input: this.#options.input?.(this.lifecycle.name) } as never)
-    ) as Actor<TLogic>;
+    const durable = createDurable(logic, this.#adapter(live), {
+      captureRootEvents: false,
+      inspect: (event) => live() && this.#onInspect(event as unknown as InspectionLike),
+    });
+    this.#durable = durable;
     this.#restoring = Boolean(saved);
-    this.#actor.start();
-    this.#restoring = false;
-    this.#persist();
-    this.#markSent();
+    try {
+      const [state, effects] = saved
+        ? durable.restore("checkpoint" in saved ? saved.checkpoint : (saved.snapshot as never))
+        : (durable.initialTransition as (input: unknown) => ReturnType<typeof durable.restore>).call(durable, this.#options.input?.(this.lifecycle.name));
+      this.#state = state;
+      this.#lastSnapshot.set(durable.rootAddress, state);
+      if (saved) {
+        const { value, status } = state as { value?: unknown; status: string };
+        this.#record({ kind: "restored", actor: logic.id, event: { type: "xstate.init" }, from: null, to: value ?? status, source: "external" });
+      }
+      await durable.executeEffects(effects);
+    } finally {
+      this.#restoring = false;
+    }
+    await this.#settle();
+  }
+
+  /** Stop the previous execution's live children so nothing they do lands in this one. */
+  #retire() {
+    const children = (this.#state as { children?: Record<string, AnyActor | undefined> } | undefined)?.children;
+    for (const child of Object.values(children ?? {})) {
+      try {
+        if (child) stopActor(child);
+      } catch {}
+    }
+  }
+
+  /** The Durable Object side of `createDurable`. Every operation records an intent and returns: accepted. */
+  #adapter(live: () => boolean): DurableExecutionAdapter<TLogic> {
+    const keyOf = (source: AnyActor, timer: TimerKey) => `${source.address}:${JSON.stringify(timer)}`;
+    return {
+      executeAction: (action, _metadata, runtime) => action.exec(runtime),
+      // The host drives the loop and never parks in it.
+      waitForEvent: () => new Promise(() => {}),
+      enqueueRootEvent: (source, event) => {
+        if (!live()) return;
+        this.#mailbox.push({ event, source: source && (this.#names.get(source.address) ?? source.id) });
+        if (!this.#inTurn) this.#kick();
+      },
+      scheduleTimer: (source, timer, delay) => {
+        if (!live()) return;
+        const key = keyOf(source, timer);
+        // A restored timer keeps the deadline already accepted.
+        if (!this.#timers.has(key)) this.#timers.set(key, { address: source.address, timer, at: Date.now() + delay });
+      },
+      cancelTimer: (source, timer) => {
+        if (live()) this.#timers.delete(keyOf(source, timer));
+      },
+      cancelAllTimers: (source) => {
+        if (!live()) return;
+        for (const [key, { address }] of this.#timers) if (address === source.address) this.#timers.delete(key);
+      },
+      deadLetter: (source, target, event, reason, detail) => {
+        if (live()) this.#onRejected(source, target, event as AnyEvent, reason, detail);
+      },
+    };
+  }
+
+  #nameOf(ref: RefLike) {
+    return this.#names.get(ref.address) ?? (ref.address === this.#durable?.rootAddress ? this.#logic.id : ref.id);
   }
 
   #onInspect(event: InspectionLike) {
     const ref = event.actorRef;
     if (event.type === "@xstate.actor") {
-      this.#names.set(ref.sessionId, ref === (this.#actor as unknown) ? ref.id : (event.id ?? ref.id));
+      this.#names.set(ref.address, ref.address === this.#durable?.rootAddress ? this.#logic.id : ref.id);
       return;
     }
     if (event.type !== "@xstate.transition" || !event.event || !event.snapshot) return;
     // Only machines are journaled; invoked promises show up through their parent's done/error events.
     if (!("value" in (event.snapshot as object))) return;
-    const actor = this.#names.get(ref.sessionId) ?? ref.id;
-    const previous = this.#lastSnapshot.get(ref.sessionId) as { value?: unknown; status?: unknown } | undefined;
-    this.#lastSnapshot.set(ref.sessionId, event.snapshot);
+    const actor = this.#nameOf(ref);
+    const previous = this.#lastSnapshot.get(ref.address) as { value?: unknown; status?: unknown } | undefined;
+    this.#lastSnapshot.set(ref.address, event.snapshot);
     const valueOf = (s: { value?: unknown; status?: unknown } | undefined) => (s ? (s.value ?? s.status) : null);
-    const type = event.event.type;
+    // A timer firing journals the event it delivers (`xstate.after`, `xstate.timeout.state`).
+    const fired = event.event.type === "xstate.timer" ? (event.event as { event?: AnyEvent }).event : undefined;
+    const journaled = fired ?? event.event;
+    const type = journaled.type;
     const unhandled = previous === event.snapshot;
     if (type === "xstate.snapshot.actor" || (unhandled && type.startsWith("xstate."))) return;
-    this.#record({
+    const entry = this.#record({
       kind: this.#restoring && type === "xstate.init" ? "restored" : unhandled ? "unhandled" : "transition",
       actor,
-      event: event.event,
+      event: journaled,
       from: valueOf(previous),
       to: valueOf(event.snapshot),
-      source: event.sourceRef
-        ? (this.#names.get(event.sourceRef.sessionId) ?? event.sourceRef.id)
-        : (this.#source ?? "external"),
+      source: event.sourceRef ? this.#nameOf(event.sourceRef) : (this.#source ?? "external"),
     });
-    this.#queuePersist();
+    if (unhandled) this.#unhandled.set(event.event, entry);
+    // A live child moved outside a turn: commit it.
+    if (!this.#inTurn) this.#kick();
   }
 
-  #onRejected(rejection: RejectionLike) {
-    const issues = rejection.issues
+  #onRejected(source: AnyActor | undefined, target: AnyActor | undefined, event: AnyEvent, reason: string, detail?: DeadLetterDetail) {
+    const issues = detail?.issues
       ?.map((issue) => {
         const path = issue.path?.map((p) => String(typeof p === "object" ? p.key : p)).join(".");
         return path ? `${path}: ${issue.message}` : issue.message;
       })
       .join("; ");
-    this.#rejection = `${rejection.reason}${issues ? `: ${issues}` : ""}`;
+    this.#rejection = `${reason}${issues ? `: ${issues}` : ""}`;
+    // A rejected event leaves the snapshot unchanged, which inspection reports as unhandled.
+    const unhandled = this.#unhandled.get(event);
+    const index = unhandled ? this.#journal.indexOf(unhandled) : -1;
+    if (index >= 0) this.#journal.splice(index, 1);
     this.#record({
       kind: "rejected",
-      actor: rejection.targetRef?.id ?? this.actor.id,
-      event: rejection.event,
+      actor: target ? this.#nameOf(target) : (detail?.targetId ?? this.#logic.id),
+      event,
       from: null,
       to: null,
-      source: this.#source ?? "external",
+      source: source ? this.#nameOf(source) : (this.#source ?? "external"),
       detail: this.#rejection,
     });
-    this.#queuePersist();
   }
 
   #record(entry: Omit<JournalEntry, "seq" | "at">) {
-    this.#journal.push({ ...entry, event: toJSON(entry.event), seq: ++this.#seq, at: Date.now() });
+    const recorded = { ...entry, event: toJSON(entry.event), seq: ++this.#seq, at: Date.now() };
+    this.#journal.push(recorded);
     const max = this.#options.journalSize ?? 120;
     if (this.#journal.length > max) this.#journal.splice(0, this.#journal.length - max);
+    return recorded;
   }
 
-  // Timer-driven transitions (no send() call) persist and broadcast on the next microtask.
-  #queuePersist() {
-    if (this.#persistQueued) return;
-    this.#persistQueued = true;
-    queueMicrotask(() => {
-      this.#persistQueued = false;
-      this.#persist();
-      this.#commit();
+  /** Checkpoint, journal, inbox, outbox jobs and the wake job, in one SQLite transaction. */
+  #save() {
+    if (!this.#durable || !this.#state) return;
+    const checkpoint = this.#durable.checkpoint(this.#state as SnapshotFrom<TLogic>);
+    this.lifecycle.storage.transactionSync(() => {
+      this.lifecycle.storage.kv.put(STORAGE_KEY, {
+        checkpoint,
+        timers: Object.fromEntries(this.#timers),
+        journal: this.#journal,
+        seq: this.#seq,
+        inbox: this.#inbox,
+        deadLetters: this.#deadLetters,
+      } satisfies Saved);
+      for (const { id, delivery, time, parked } of this.#outgoing.splice(0)) {
+        const push = this.lifecycle.jobs.push({
+          id,
+          fn: "deliver",
+          time,
+          payload: delivery,
+          retry: { maxAttempts: 5, baseDelayMs: 250, maxDelayMs: 10_000 },
+        });
+        // The row is inserted synchronously; a rejection here means it was not.
+        this.#pending.push(push.catch((error: unknown) => this.#deadLetter(delivery, `Outbox write failed: ${String(error)}`)));
+        if (parked) {
+          this.#pending.push(this.#park({ token: id, to: `${delivery.binding}/${delivery.name}`, eventType: delivery.event.type }));
+        }
+      }
+      this.#armWake();
     });
-  }
-
-  #persist() {
-    if (!this.#actor) return;
-    const snapshot = this.#actor.getPersistedSnapshot();
-    this.lifecycle.storage.kv.put(STORAGE_KEY, {
-      snapshot,
-      journal: this.#journal,
-      seq: this.#seq,
-      inbox: this.#inbox,
-      deadLetters: this.#deadLetters,
-    } satisfies Saved);
-    this.#armWake(snapshot);
   }
 
   /** Push what changed since the last frame: new journal entries and changed actors. */
   /** `settled`: a job that just finished; Lifecycle deletes its row only after onJob returns. */
   #commit(settled?: string) {
-    if (!this.#actor) return;
+    if (!this.#state) return;
     const entries = this.#journal.filter((e) => e.seq > this.#sentSeq);
     const actors = this.#actors();
     const changed = actors.filter((a) => this.#prints.get(a.id) !== JSON.stringify(a));
@@ -538,14 +724,15 @@ export class DurableMachine<TLogic extends AnyStateMachine> extends LifecycleCap
     this.#prints = new Map(actors.map((a) => [a.id, JSON.stringify(a)]));
   }
 
-  #armWake(snapshot: unknown) {
-    const due = nextTimerDeadline(snapshot);
+  #armWake() {
+    let due: number | undefined;
+    for (const { at } of this.#timers.values()) due = due === undefined ? at : Math.min(due, at);
     if (due === this.#wakeAt) return;
     this.#wakeAt = due;
     this.#pending.push(
       due === undefined
-        ? this.lifecycle.jobs.cancel("xstate-wake")
-        : this.lifecycle.jobs.push({ id: "xstate-wake", fn: "wake", time: due }),
+        ? this.lifecycle.jobs.cancel(WAKE_JOB)
+        : this.lifecycle.jobs.push({ id: WAKE_JOB, fn: "wake", time: due }),
     );
   }
 
@@ -554,11 +741,11 @@ export class DurableMachine<TLogic extends AnyStateMachine> extends LifecycleCap
   }
 
   #value() {
-    return (this.actor.getSnapshot() as { value?: unknown }).value;
+    return (this.#state as { value?: unknown }).value;
   }
 
   #actors(): ActorView[] {
-    const persisted = toJSON(this.actor.getPersistedSnapshot()) as unknown as PersistedLike;
+    const persisted = toJSON(this.#durable!.checkpoint(this.#state as SnapshotFrom<TLogic>).snapshot) as unknown as PersistedLike;
     const root: ActorView = {
       id: this.#logic.id,
       src: this.#logic.id,
@@ -616,44 +803,22 @@ export class MachineCallables extends RpcTarget {
   }
 }
 
-type RefLike = { id: string; sessionId: string };
+type RefLike = { id: string; address: string };
 
 type InspectionLike = {
   type: string;
   actorRef: RefLike;
-  id?: string;
   event?: AnyEvent;
   snapshot?: unknown;
   sourceRef?: RefLike;
-};
-
-type RejectionLike = {
-  event: AnyEvent;
-  reason: string;
-  targetRef?: RefLike;
-  issues?: ReadonlyArray<{ message: string; path?: ReadonlyArray<PropertyKey | { key: PropertyKey }> }>;
 };
 
 type PersistedLike = {
   value: unknown;
   status: string;
   context?: Record<string, unknown>;
-  timers?: Array<{ delay: number; scheduledAt?: number }>;
   children?: Record<string, { src?: string; snapshot?: PersistedLike }>;
 };
-
-function nextTimerDeadline(snapshot: unknown): number | undefined {
-  let due: number | undefined;
-  const visit = (s: PersistedLike | undefined) => {
-    for (const timer of s?.timers ?? []) {
-      const at = (timer.scheduledAt ?? Date.now()) + timer.delay;
-      due = due === undefined ? at : Math.min(due, at);
-    }
-    for (const child of Object.values(s?.children ?? {})) visit(child.snapshot);
-  };
-  visit(snapshot as PersistedLike);
-  return due;
-}
 
 function toJSON<T>(value: T): T {
   return JSON.parse(JSON.stringify(value ?? null)) as T;

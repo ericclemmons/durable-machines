@@ -88,9 +88,9 @@ export class Account extends DurableObject<Env> {
 
 | Concern | How |
 | --- | --- |
-| Persistence | `getPersistedSnapshot()` after every transition, `restoreActor()` on wake. Spawned children are persisted inside the snapshot. |
-| Timers (`after`, `timeout`) | One Lifecycle job at the earliest timer deadline, so the alarm wakes the object. Restoring re-arms due timers. |
-| Outbox | `deliver(binding, name, event)` pushes a Lifecycle job. `send()` runs the transition inside `transactionSync`, and `jobs.push` inserts its row synchronously, so the snapshot and its outgoing messages commit together. |
+| Persistence | XState's `createDurable` ([`DURABLE.md`](../../packages/durable-machines/DURABLE.md)): `transition()` + `executeEffects()` per event, `checkpoint()` after it, `restore()` on wake. Spawned children are persisted inside the checkpoint. Transitions are pure, so machines read time from events (`receivedAt`, `at`), never `Date.now()`. |
+| Timers (`after`, `timeout`) | The adapter's `scheduleTimer` keeps each timer's absolute deadline. One Lifecycle job wakes the object at the earliest one and feeds `xstate.timer` to the root or the child that owns it. |
+| Outbox | `deliver(binding, name, event)` records the message. After the transition's effects settle, one `transactionSync` writes the checkpoint, the inbox ids, the outbox jobs and the wake job, so the snapshot and its outgoing messages commit together. |
 | Inbox | Every message carries `{ messageId, from }`. The receiver keeps the last 500 ids and acknowledges repeats without processing them, so retries are effectively once. |
 | Durable Object errors | [`packages/durable-machines/src/do-call.ts`](../../packages/durable-machines/src/do-call.ts) follows the [error-handling guide](https://developers.cloudflare.com/durable-objects/best-practices/error-handling/): a fresh stub per attempt, jittered retry on `.retryable`, and on `.overloaded` the job is rescheduled with exponential backoff instead of retried. Other failures use Lifecycle's retries. |
 | Dead letters | A message that can't be delivered (gave up, rejected by the receiver, or the outbox write failed) is journaled and sent back into the sender's machine as `outbox.failed`. The Project cancels a build whose request never reached the Account; the Account frees a slot whose `build.start` never reached the Project. |
@@ -119,7 +119,8 @@ The same `do-call.ts` is used by the webhook Worker and the BuildWorkflow. The W
 ## Known limits
 
 - XState v6 is beta. `xstate/validation` and inspection events are marked experimental.
-- `@xstate/effect` is not used. It needs `createEffectActor`, has an async `send`, and doesn't support `restoreActor` with invoked actors, which this capability relies on.
+- `xstate/durable` is experimental and may change in a minor release.
+- `@xstate/effect` is not used. It needs `createEffectActor` and an async `send`; this capability drives pure transitions instead.
 - The graph coverage check reads function source text. It covers the forms these machines use; a new form can slip through until the check learns it.
 - Project settings (build, deploy and preview commands, root directory, preview builds) are stored in the Project machine. Builds keep the commands they were requested with.
 - Old snapshots may not restore into changed machines. After changing a machine, reset the demo.
