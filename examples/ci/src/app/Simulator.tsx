@@ -4,7 +4,8 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import type { Simulation } from "../domain/github";
 import type { IngestResult } from "../worker/webhook";
 import { BuildSettingsForm } from "./BuildSettings";
-import { sendTo, setHovered, setPinned, setSelectedNode, setSending, useClock, useInFlight, useView } from "./store";
+import { sendTo, setHovered, setPinned, setSelectedNode, setSending, useClock, useInFlight, useView } from "@durable-machines/inspector";
+import { busy } from "./builds";
 import type { ProjectContext, ProjectRecord, ProjectSettings } from "./types";
 
 type SimResult = IngestResult & { githubEvent: string; deliveryId: string; payload: unknown };
@@ -59,7 +60,7 @@ export function Simulator({
   const [choice, setChoice] = useState(0);
   const savedSettings = useRef<Record<string, ProjectSettings>>({});
   const clock = useClock();
-  const inFlight = useInFlight();
+  const inFlight = useInFlight(busy);
 
   useEffect(() => {
     if (!projects.some((p) => p.repo === repo)) setRepo(projects[0]?.repo ?? "");
