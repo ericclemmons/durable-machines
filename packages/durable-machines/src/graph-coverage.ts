@@ -14,6 +14,8 @@ type Json = Record<string, unknown>;
 
 export type CoverageProblem = { state: string; transition: string; reason: string };
 
+const isJson = (v: unknown): v is Json => typeof v === "object" && v !== null;
+
 const isCode = (v: unknown): v is { "@code": string } => typeof v === "object" && v !== null && "@code" in v;
 
 function checkCode(code: string): string | undefined {
@@ -44,19 +46,21 @@ export function graphCoverage(definition: unknown): CoverageProblem[] {
     }
   };
   const visit = (path: string, config: Json) => {
-    for (const [event, t] of Object.entries((config.on ?? {}) as Json)) check(path, event, t);
-    for (const [delay, t] of Object.entries((config.after ?? {}) as Json)) check(path, `after ${delay}`, t);
+    for (const [event, t] of Object.entries(isJson(config.on) ? config.on : {})) check(path, event, t);
+    for (const [delay, t] of Object.entries(isJson(config.after) ? config.after : {})) check(path, `after ${delay}`, t);
     if (config.always) check(path, "always", config.always);
     if (config.onDone) check(path, "onDone", config.onDone);
     if (config.onTimeout) check(path, "onTimeout", config.onTimeout);
     if (config.choice) check(path, "choice", config.choice);
-    for (const inv of config.invoke ? [config.invoke as Json].flat() : []) {
+    for (const inv of [config.invoke].flat().filter(isJson)) {
       if (inv.onDone) check(path, `invoke ${String(inv.src)} onDone`, inv.onDone);
       if (inv.onError) check(path, `invoke ${String(inv.src)} onError`, inv.onError);
     }
-    for (const [key, child] of Object.entries((config.states ?? {}) as Record<string, Json>)) visit(path ? `${path}.${key}` : key, child);
+    for (const [key, child] of Object.entries(isJson(config.states) ? config.states : {})) {
+      if (isJson(child)) visit(path ? `${path}.${key}` : key, child);
+    }
   };
-  visit("", definition as Json);
+  if (isJson(definition)) visit("", definition);
   return problems;
 }
 

@@ -1,10 +1,11 @@
+import type { MachineView } from "durable-machines/protocol";
 import { objectLabelText } from "./ui";
 import ELK, { type ElkExtendedEdge, type ElkNode } from "elkjs/lib/elk.bundled.js";
 
 // Turns XState v6 JSON definitions (machineToJSON) into laid-out statecharts.
 // ELK (Eclipse Layout Kernel) only does the layout; it knows nothing about XState.
 // Function transitions are serialized as `@code`; their literal targets become
-// dashed "guarded" edges. src/lib/graph-coverage.ts rejects computed targets,
+// dashed "guarded" edges. `durable-machines/graph` rejects computed targets,
 // so every edge is visible; the journal comparison is only a safety net.
 
 type Json = Record<string, unknown>;
@@ -44,7 +45,8 @@ export type Chart = { width: number; height: number; nodes: ChartNode[]; edges: 
 const elk = new ELK();
 const cache = new Map<string, Promise<Chart>>();
 
-const isCode = (v: unknown): v is { "@code": string } => typeof v === "object" && v !== null && "@code" in v;
+const isRecord = (v: unknown): v is Json => typeof v === "object" && v !== null;
+const isCode = (v: unknown): v is { "@code": string } => isRecord(v) && "@code" in v;
 
 /** Literal targets in a transition: `{ target }` objects, or `target: "x"` inside `@code`. */
 function targetsOf(transition: unknown): { targets: string[]; guarded: boolean } {
@@ -410,3 +412,38 @@ export function missingEdges(chart: Chart, entries: ReadonlyArray<{ event: { typ
   }
   return [...missing.values()];
 }
+
+/**
+ * An event as the diagram labels it. An invoked actor's done or error event is named by
+ * what it invoked ("done: dispatchBuild"), found from its actor id ("account.scheduler.dispatching:0").
+ */
+export function eventLabel(event: { type: string; actorId?: unknown }, definition: unknown): string {
+  const outcome = event.type === "xstate.done.actor" ? "done" : event.type === "xstate.error.actor" ? "error" : undefined;
+  if (!outcome || typeof event.actorId !== "string") return event.type;
+  const [, ...path] = event.actorId.replace(/:\d+$/, "").split(".");
+  let node = definition;
+  for (const key of path) node = isRecord(node) && isRecord(node.states) ? node.states[key] : undefined;
+  const [invoke] = [isRecord(node) ? node.invoke : undefined].flat();
+  return isRecord(invoke) && invoke.src ? `${outcome}: ${String(invoke.src)}` : event.type;
+}
+
+/** The definition an actor in `view` runs: the root machine's, or a child's by its `src`. */
+export function definitionOf(view: MachineView | undefined, actor?: string) {
+  if (!view) return undefined;
+  if (!actor || actor === view.machineId) return view.definitions[view.machineId];
+  const src = view.children.find((c) => c.id === actor)?.src;
+  if (src && src in view.definitions) return view.definitions[src];
+  // A child that already finished is gone from the view: fall back to the only other definition.
+  const others = Object.keys(view.definitions).filter((k) => k !== view.machineId);
+  const [only] = others;
+  return others.length === 1 && only ? view.definitions[only] : undefined;
+}
+
+/**
+ * XState's own bookkeeping: xstate.init, events no state handles, and the restore on wake.
+ * An invoked actor finishing (done/error) is not: it moves the machine like any event.
+ */
+export const isInternalEntry = (e: { kind: string; event: { type: string } }) =>
+  e.kind === "unhandled" ||
+  e.kind === "restored" ||
+  (e.event.type.startsWith("xstate.") && e.event.type !== "xstate.done.actor" && e.event.type !== "xstate.error.actor");

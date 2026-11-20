@@ -3,6 +3,9 @@ import { setup } from "xstate";
 import { standardSchemaValidator } from "xstate/validation";
 import { OutboxFailed, REVIEW_MS, REVIEW_THRESHOLD, std } from "./schema";
 
+/** The sender's Account creates a Transfer with this event. */
+export const TransferStart = Schema.Struct({ from: Schema.String, to: Schema.String, amount: Schema.Number, at: Schema.Number });
+
 const TransferContext = Schema.Struct({
   transferId: Schema.String,
   from: Schema.String,
@@ -15,8 +18,8 @@ const TransferContext = Schema.Struct({
 type Message = { type: string; [key: string]: unknown };
 
 /**
- * One transfer between two accounts, as a saga. The sender has already set the
- * money aside. Large transfers wait for review, then every transfer waits its
+ * One transfer between two accounts, as a saga. The sender's account creates it
+ * with `transfer.start` once it has set the money aside. Large transfers wait for review, then every transfer waits its
  * turn at the Bank's clearing house, credits the receiver and settles with the
  * sender. If the receiver bounces it, the sender is refunded instead.
  */
@@ -27,10 +30,9 @@ export const transferMachine = setup({
     toBank: (_event: Message) => {},
   },
   schemas: {
-    input: std(Schema.Struct({ transferId: Schema.String })),
+    input: std(Schema.Struct({ transferId: Schema.String, ...TransferStart.fields })),
     context: std(TransferContext),
     events: {
-      "transfer.start": std(Schema.Struct({ from: Schema.String, to: Schema.String, amount: Schema.Number, at: Schema.Number })),
       "transfer.cleared": std(Schema.Struct({})),
       "transfer.credited": std(Schema.Struct({})),
       "transfer.credit_failed": std(Schema.Struct({ reason: Schema.String })),
@@ -42,17 +44,12 @@ export const transferMachine = setup({
 }).createMachine({
   id: "transfer",
   version: "1",
-  context: ({ input }) => ({ transferId: input.transferId, from: "", to: "", amount: 0, startedAt: null, reason: null }),
+  context: ({ input }) => ({ transferId: input.transferId, from: input.from, to: input.to, amount: input.amount, startedAt: input.at, reason: null }),
   initial: "requested",
   states: {
     requested: {
-      description: "Waiting for the sender's account to start it",
-      on: {
-        "transfer.start": ({ context, event }) => {
-          const next = { ...context, from: event.from, to: event.to, amount: event.amount, startedAt: event.at };
-          return event.amount >= REVIEW_THRESHOLD ? { target: "review", context: next } : { target: "clearing", context: next };
-        },
-      },
+      type: "choice",
+      choice: ({ context }) => (context.amount >= REVIEW_THRESHOLD ? { target: "review" } : { target: "clearing" }),
     },
     review: {
       description: `$${REVIEW_THRESHOLD} or more: held for review, approved after ${REVIEW_MS / 1000}s`,

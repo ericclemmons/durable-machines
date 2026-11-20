@@ -49,15 +49,35 @@ turn of its own.
 | `cancelTimer` / `cancelAllTimers` | Delete from the map. |
 | (wake) | One Lifecycle job `xstate-wake` at the earliest `at`. When it runs, each due timer becomes `{ type: "xstate.timer", ...timer }`: `transition()` for the root, `deliverEvent(ref, ref, event)` for a child found with `getActorRef(state, address)`. A child that is gone is skipped. |
 | `deadLetter` | Journaled as `rejected`; the reason and schema issues are returned by `send()`. The `unhandled` entry inspection reports for the same event is dropped. |
-| `deliver()` (host API) | Recorded, then `lifecycle.jobs.push` inside the turn's `transactionSync` (rows insert synchronously). |
+| `deliver()` (host API) | Recorded, then `lifecycle.jobs.push` inside the turn's `transactionSync` (rows insert synchronously). Journaled as `sent` right after the root transition whose action called it (`executeAction` marks the root's actions), ahead of child transitions its earlier effects caused. A successful delivery writes no entry; its commit frame still goes out so clients drop the outbox item. |
 | `inspect` option | Same `JournalEntry` records and `ActorView`s as before. Actors are keyed by address. A timer firing is journaled as the event it delivers (`xstate.after`, `xstate.timeout.state`). |
 | `startActor`, `stopActor`, `terminateActor`, `sendEvent`, `runLogic` | Not implemented: local behavior. Children are co-located and embedded in the checkpoint. |
+
+## Creation, journal table
+
+- `createdBy: { event, input(event, name) }` (instead of `input`): `#boot` finds no checkpoint
+  and no saved input, so there is no execution state. `send()` of any other event returns
+  "`Class/name` hasn't been created yet". The creating event (through `send()` or `create()`)
+  runs `initialTransition(input)`; the input goes to `xstate:input` in the same transaction as
+  the first checkpoint, and an `xstate.reset` frame goes to clients. The event itself is not
+  sent to the machine; the journal shows `xstate.init` from the sender. A repeat is acknowledged
+  as a duplicate. `reset()` deletes the input too, so the object waits to be created again.
+- Every journal entry is appended to `xstate_journal (seq, at, entry)` in the turn's
+  `transactionSync`. Entries recorded during a turn stay unsaved until then, so `sent`
+  entries can be placed after their transition and renumbered. The view keeps the last
+  `journalSize`; `history({ before, limit })` (also on `MachineCallables`) pages through the table.
+  `journalRetentionDays` runs a daily `xstate-prune-journal` job. A journal saved inline by an
+  older version moves into the table on boot.
+- An object loaded by ID without a name (Data Studio, the local explorer) aborts itself once that
+  call ends, so the next call by name gets a named copy (workerd#8537). `classify()` treats
+  that error and `.durableObjectReset` as retryable. `restartIfNameless()` is exported for
+  objects that install Lifecycle themselves, such as the CI example's Clock.
 
 ## Atomicity
 
 Adapter operations return synchronously, which `createDurable` treats as accepted.
 Nothing reaches storage until the turn's effects and mailbox settle. Then a single
-`transactionSync` writes the checkpoint, journal, inbox ids, timer map, outbox jobs
+`transactionSync` writes the checkpoint, journal rows, inbox ids, timer map, outbox jobs
 and the wake job. A snapshot and the messages it produced commit together or not at all.
 
 If a turn throws (an action throws, `executeEffects` rejects, the transaction fails),
@@ -100,6 +120,12 @@ Baseline: `923bdaa` (`main` after [PR #1](https://github.com/ericclemmons/durabl
 ```
 
 ## Verified
+
+- With `createdBy` and the journal table, `cf dev` in `examples/bank`: each Transfer starts with
+  `xstate.init` from `Account/127.0.0.1`; every `sent` entry follows the transition that queued it;
+  `/api/view/transfer/nope` fails with "hasn't been created yet"; `xstate_journal` holds every
+  entry. `examples/ci`: a push to `acme/web` journals `sent build.requested` right after the
+  Project's `scm.event`, before the spawned build's `xstate.init`.
 
 - After rebasing on `main`: `pnpm check`, `pnpm --filter durable-machines build`, and
   `cf build` in `examples/bank` and `examples/ci`: pass.
@@ -171,8 +197,12 @@ Missing:
 - `actor` is now a read-only facade `{ id, getSnapshot() }`, deprecated. There is no live
   root actor to send to. Use `snapshot` (new) or `send()`.
 - `onStart`, `onJobError` are async.
-- Storage: `xstate:actor` now holds `{ checkpoint, timers, journal, seq, inbox, deadLetters }`.
-  The old `{ snapshot, ... }` shape still restores (as a bare snapshot).
+- Storage: `xstate:actor` now holds `{ checkpoint, timers, seq, inbox, deadLetters }`; the
+  journal lives in `xstate_journal`. The old `{ snapshot, ... }` shape still restores (as a bare snapshot).
+- Journal kind `delivered` is now `sent` (written with the transition, not after delivery).
+  `delivered` stays in the type for entries written before.
+- `actors` is typed from the machine's `setup({ actors })`: unknown keys and actors with other
+  input or output types are errors.
 - Machines must be pure. `examples/ci` now reads time from `ScmEvent.receivedAt`,
   `build.step.at`, and the Account worker stamps `at` on a failed dispatch when it sends it.
 

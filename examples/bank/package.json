@@ -13,6 +13,7 @@
   },
   "dependencies": {
     "@cloudflare/kumo": "^2.19.0",
+    "@durable-machines/inspector": "workspace:*",
     "@phosphor-icons/react": "^2.1.10",
     "agents": "^0.33.0",
     "durable-machines": "workspace:*",

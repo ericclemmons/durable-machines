@@ -1,6 +1,6 @@
 import { Button } from "@cloudflare/kumo";
 import { ArrowsOutIcon, MagnifyingGlassMinusIcon, MagnifyingGlassPlusIcon } from "@phosphor-icons/react";
-import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import type { Chart } from "./graph";
 import type { Box } from "./Statechart";
 
@@ -11,47 +11,58 @@ const contains = (outer: Box, inner: Box) =>
 
 /** Most the frame magnifies when it zooms to a part. */
 const MAX_SCALE = 1.1;
+/** Least: a target bigger than the frame (an event's sender and receiver) zooms out this far to fit. */
+const MIN_FIT_SCALE = 0.55;
 /** At 1×, state names are 12px and transition labels 10px, about the size of the events list. */
 const READABLE_SCALE = 1;
-const TWEEN_MS = 900;
+const TWEEN_MS = 600;
+/** How far into the tween the new state starts to draw: the camera is nearly there and easing in. */
+const SETTLE_AT = 0.6;
 
 const scaleOf = (view: Box, size: { width: number }) => size.width / view.width;
 
 /**
  * Grow `box` by a margin, to the frame's aspect ratio, centred. A zoom target
- * is magnified between READABLE_SCALE and MAX_SCALE, even if that crops it.
+ * is magnified up to MAX_SCALE, and shrunk no further than MIN_FIT_SCALE to fit, even if that crops it.
  */
 function framed(box: Box, size: { width: number; height: number }, readable = false): Box {
   const b = { x: box.x - PAD, y: box.y - PAD, width: box.width + PAD * 2, height: box.height + PAD * 2 };
   const aspect = size.width / Math.max(1, size.height);
   let width = Math.max(b.width, b.height * aspect);
-  if (readable) width = Math.min(Math.max(width, size.width / MAX_SCALE), size.width / READABLE_SCALE);
+  if (readable) width = Math.min(Math.max(width, size.width / MAX_SCALE), size.width / MIN_FIT_SCALE);
   const height = width / aspect;
   return { x: b.x + b.width / 2 - width / 2, y: b.y + b.height / 2 - height / 2, width, height };
 }
 
 /**
  * Fills its parent. Animates to `target` (or the whole chart) when the focus
- * changes. Scroll to zoom, drag to pan.
+ * changes. Scroll to zoom, drag to pan. `onSettle` runs once the frame is (nearly)
+ * where `settleKey` asked it to be, so the caller can draw the new point there.
  */
 export function ZoomFrame({
   chart,
   target,
   focusKey,
+  settleKey = focusKey,
+  onSettle = () => {},
   onBackground,
   children,
 }: {
   chart: Chart;
   target?: Box;
   focusKey: string;
+  /** Changes with the point shown. */
+  settleKey?: string;
+  onSettle?: () => void;
   onBackground?: () => void;
-  children: (view: Box) => React.ReactNode;
+  children: (view: Box) => ReactNode;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const [size, setSize] = useState({ width: 800, height: 500 });
   const [goal, setGoal] = useState<{ box: Box; instant: boolean }>();
   const [shown, setShown] = useState<Box>();
   const shownRef = useRef<Box>(undefined);
+  const lastFocus = useRef(focusKey);
   shownRef.current = shown;
   const drag = useRef<{ x: number; y: number; box: Box; moved: boolean }>(undefined);
 
@@ -74,22 +85,29 @@ export function ZoomFrame({
   // A new focus: move only if it isn't already in view and readable.
   useEffect(() => {
     const current = shownRef.current;
-    if (current && target && contains(current, target) && scaleOf(current, size) >= READABLE_SCALE) return;
+    if (current && target && contains(current, target) && scaleOf(current, size) >= Math.min(READABLE_SCALE, scaleOf(framed(target, size, true), size)))
+      return onSettle();
+    if ((!current || !target) && focusKey === lastFocus.current) return onSettle();
+    lastFocus.current = focusKey;
     setGoal({ box: target ? framed(target, size, true) : framed(whole, size), instant: false });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [focusKey]);
+  }, [focusKey, settleKey]);
 
   const setManual = (box: Box) => setGoal({ box, instant: true });
 
-  // Tween the shown box toward the goal.
-  const goalKey = goal ? `${goal.box.x}|${goal.box.y}|${goal.box.width}|${goal.box.height}` : "";
+  // Tween the shown box toward the goal. The goal is a fresh object each time, so asking
+  // for the same box again still tweens (and settles).
   useEffect(() => {
     if (!goal) return;
     const from = shownRef.current;
-    if (goal.instant || !from) return setShown(goal.box);
+    if (goal.instant || !from) {
+      setShown(goal.box);
+      return onSettle();
+    }
     const to = goal.box;
     const start = performance.now();
     let frame = 0;
+    let settled = false;
     const step = (t: number) => {
       const k = Math.min(1, (t - start) / TWEEN_MS);
       // Ease in and out.
@@ -100,12 +118,16 @@ export function ZoomFrame({
         width: from.width + (to.width - from.width) * e,
         height: from.height + (to.height - from.height) * e,
       });
+      if (k >= SETTLE_AT && !settled) {
+        settled = true;
+        onSettle();
+      }
       if (k < 1) frame = requestAnimationFrame(step);
     };
     frame = requestAnimationFrame(step);
     return () => cancelAnimationFrame(frame);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [goalKey]);
+  }, [goal]);
 
   const view = shown ?? goal?.box ?? framed(whole, size);
   const zoom = (factor: number, cx = size.width / 2, cy = size.height / 2) => {
@@ -152,7 +174,7 @@ export function ZoomFrame({
         onPointerUp={() => setTimeout(() => (drag.current = undefined))}
         onPointerLeave={() => (drag.current = undefined)}
         onClickCapture={(e) => drag.current?.moved && e.stopPropagation()}
-        onClick={(e) => (e.target === e.currentTarget || (e.target as Element).tagName === "svg" ? onBackground?.() : undefined)}
+        onClick={(e) => (e.target === e.currentTarget || (e.target instanceof Element && e.target.tagName === "svg") ? onBackground?.() : undefined)}
       >
         {children(view)}
       </div>

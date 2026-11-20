@@ -14,6 +14,8 @@ const ActiveBuild = Schema.Struct({
   prNumber: Schema.NullOr(Schema.Number),
   fromFork: Schema.Boolean,
   phase: Schema.Literals(["awaiting_approval", "queued", "running"]),
+  /** The newer build that asked this one to step aside, so it is only asked once. */
+  supersededBy: Schema.optionalKey(Schema.NullOr(Schema.String)),
 });
 type ActiveBuild = typeof ActiveBuild.Type;
 
@@ -210,8 +212,8 @@ export const projectMachine = setup({
       const buildNumber = context.nextBuildNumber;
       const buildId = `${context.projectId}-${context.generation}-${buildNumber}`;
       const requiresApproval = plan.build.fromFork;
-      const active: ActiveBuild = { buildId, buildNumber, ...plan.build, phase: requiresApproval ? "awaiting_approval" : "queued" };
-      const superseded = context.active.filter((b) => b.phase !== "running" && b.branch === active.branch);
+      const active: ActiveBuild = { buildId, buildNumber, ...plan.build, phase: requiresApproval ? "awaiting_approval" : "queued", supersededBy: null };
+      const superseded = context.active.filter((b) => b.phase !== "running" && b.branch === active.branch && !b.supersededBy);
       for (const old of superseded) enq.sendTo(children[old.buildId], { type: "build.supersede", by: buildId });
 
       enq.spawn("build", {
@@ -238,7 +240,7 @@ export const projectMachine = setup({
           ...context,
           openPullRequests: plan.openPullRequests,
           nextBuildNumber: buildNumber + 1,
-          active: [...context.active, active],
+          active: [...context.active.map((b) => (superseded.includes(b) ? { ...b, supersededBy: buildId } : b)), active],
           decisions: record({
             verdict: requiresApproval ? "approval" : "build",
             reason: superseded.length ? `${plan.reason}; supersedes ${superseded.map((b) => `#${b.buildNumber}`).join(", ")}` : plan.reason,
