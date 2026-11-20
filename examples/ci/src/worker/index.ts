@@ -72,12 +72,13 @@ export default {
     }
 
     if (request.method === "POST" && url.pathname === "/api/reset") {
+      // Senders first, so nothing from the old run reaches an Account after it has been reset.
       await Promise.all([
         ...Object.keys(installations).map((id) => env.Installation.getByName(id).reset()),
-        ...Object.keys(accounts).map((id) => env.Account.getByName(id).reset()),
         ...Object.keys(projects).map((id) => env.Project.getByName(id).reset()),
         env.Clock.getByName("global").control("clear"),
       ]);
+      await Promise.all(Object.keys(accounts).map((id) => env.Account.getByName(id).reset()));
       return Response.json({ ok: true });
     }
 

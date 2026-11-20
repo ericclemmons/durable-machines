@@ -2,6 +2,7 @@ import { DurableObject } from "cloudflare:workers";
 import { Lifecycle } from "agents/lifecycle";
 import { WebSockets } from "agents/websockets";
 import { accounts, installations, projects } from "../domain/registry";
+import { restartIfNameless } from "durable-machines";
 import { Clock as ClockCapability, ClockCallables } from "durable-machines/clock";
 import type { ClockSettings, ParkRequest, Parked } from "durable-machines/protocol";
 
@@ -39,7 +40,7 @@ export class Clock extends DurableObject<Env> {
     },
   });
   readonly webSockets: WebSockets = new WebSockets({ state: this.clock, callables: new ClockCallables(this.clock) });
-  readonly lifecycle = Lifecycle.install(this).use(this.clock).use(this.webSockets);
+  readonly lifecycle = Lifecycle.install(restartIfNameless(this, this.ctx)).use(this.clock).use(this.webSockets);
 
   async park(request: ParkRequest) {
     await this.lifecycle.start();
