@@ -1,6 +1,6 @@
 {
   "name": "durable-machines",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "XState machines in Durable Objects that you can watch live.",
   "license": "MIT",
   "homepage": "https://durable-machines.eclemmons.workers.dev/",
