@@ -45,7 +45,9 @@ Use them for anything that touches the outside world. A machine declares an acti
 | --- | --- | --- |
 | `clientEvents` | `[]` | Event types WebSocket clients may send. By default, clients can only watch. |
 | `children` | `{}` | Machines this one spawns, by `src`, so clients can draw them. |
+| `createdBy` | none | `{ event, input: (event, name) => Input }`, in place of `input`, for objects another object creates. There is no machine until `event` arrives: its input comes from that event and is saved, and other events are rejected with "hasn't been created yet". `reset()` makes the object wait again. |
 | `journalSize` | `120` | How many recent events the object keeps for clients. |
+| `journalRetentionDays` | none | Delete events older than this many days from the object's journal table, once a day. By default every event is kept. |
 | `pace` | `0` | Milliseconds to wait before each outgoing message, so people can watch it travel. |
 | `park` | none | Hands each outgoing message to a debugger clock, which can hold it until you step. |
 
