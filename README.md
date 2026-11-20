@@ -32,7 +32,9 @@ pnpm --filter @durable-machines/docs dev
 
 ## Publish
 
-`.github/workflows/publish.yml` publishes `durable-machines` to npm from a GitHub release, with npm trusted publishing (OIDC). No npm token is stored.
+Publishing a GitHub release runs [`.github/workflows/publish.yml`](.github/workflows/publish.yml), which publishes `durable-machines` to npm with [trusted publishing](https://docs.npmjs.com/trusted-publishers) (OIDC). No npm token is stored. Bump `packages/durable-machines/package.json` first.
+
+The docs and both examples deploy from `main` with Workers Builds.
 
 ## License
 
