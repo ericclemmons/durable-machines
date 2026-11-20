@@ -32,7 +32,7 @@ export function App() {
   const [open, setOpen] = useState(() => localStorage.getItem("panel:events") !== "closed");
   useEffect(() => localStorage.setItem("panel:events", open ? "open" : "closed"), [open]);
   useEffect(() => {
-    fetch("/api/topology").then(async (r) => setTopology(await r.json()));
+    fetch("/ci/api/topology").then(async (r) => setTopology(await r.json()));
   }, []);
 
   if (!topology) return <div className="p-8 text-kumo-subtle">Loading…</div>;
