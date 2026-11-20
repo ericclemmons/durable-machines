@@ -3,11 +3,11 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "pnpm --filter durable-machines build && pnpm --filter @durable-machines/example-bank build",
-    "check": "pnpm -r --if-present typecheck && pnpm --filter @durable-machines/example-ci check:graph && pnpm --filter @durable-machines/example-bank check:graph",
-    "dev": "pnpm --filter @durable-machines/example-bank dev",
-    "dev:ci": "pnpm --filter @durable-machines/example-ci dev",
-    "deploy": "pnpm --filter @durable-machines/example-bank run deploy"
+    "build": "pnpm --filter durable-machines build && pnpm --filter @durable-machines/docs build && pnpm --filter @durable-machines/site build",
+    "check": "pnpm --filter @durable-machines/site types && pnpm -r --if-present typecheck && pnpm --filter @durable-machines/example-ci check:graph && pnpm --filter @durable-machines/example-bank check:graph",
+    "dev": "pnpm --filter @durable-machines/docs build && pnpm --filter @durable-machines/site dev",
+    "dev:docs": "pnpm --filter @durable-machines/docs dev",
+    "deploy": "pnpm --filter @durable-machines/site run deploy"
   },
   "engines": {
     "node": ">=24"

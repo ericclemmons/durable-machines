@@ -15,13 +15,13 @@ const AMOUNTS = [10, 25, 150];
 const RANDOM = "__random";
 
 const command = async (body: Record<string, unknown>): Promise<SendResult> => {
-  const response = await fetch("/api/me", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+  const response = await fetch("/bank/api/me", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
   return response.json();
 };
 
 /** Your account: its balance, and the commands only you can send it. */
-export function You({ me, accountId }: { me: string; accountId: string }) {
-  const { view } = useView("Account", accountId);
+export function You({ accountId }: { accountId: string }) {
+  const { view } = useView("BankAccount", accountId);
   const bank = useView("Bank", "global").view;
   const [to, setTo] = useState(RANDOM);
   const [amount, setAmount] = useState(AMOUNTS[0]!);
@@ -56,7 +56,7 @@ export function You({ me, accountId }: { me: string; accountId: string }) {
       <div className="flex items-center gap-2">
         <div className="grid min-w-0 leading-tight">
           <Text size="xs" variant="secondary">
-            This is you: <code className="font-mono">{me}</code>
+            This is you: <code className="font-mono">Account/{accountId}</code>
           </Text>
           <span className="text-2xl font-semibold tabular-nums text-kumo-strong">${context?.balance ?? "…"}</span>
         </div>

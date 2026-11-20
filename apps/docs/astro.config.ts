@@ -6,7 +6,7 @@ import nimbus, {
 import { tableScroll } from "@cloudflare/nimbus-docs/markdown";
 
 const nimbusConfig = defineNimbusConfig({
-  site: "https://durable-machines.eclemmons.workers.dev",
+  site: process.env.SITE_URL ?? "https://durable-machines.ericclemmons.workers.dev",
   title: "Durable Machines",
   description: "XState machines in Durable Objects that you can watch live.",
   locale: "en",

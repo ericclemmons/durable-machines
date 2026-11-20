@@ -32,7 +32,7 @@ function useFollowed(me: string) {
   const accounts = new Set<string>();
   for (const t of transfers) {
     const context = views.get(t)?.root.context as { from?: string; to?: string } | undefined;
-    for (const id of [context?.from, context?.to]) if (id && `Account/${id}` !== me) accounts.add(`Account/${id}`);
+    for (const id of [context?.from, context?.to]) if (id && `BankAccount/${id}` !== me) accounts.add(`BankAccount/${id}`);
   }
   return [me, ...transfers.reverse(), ...accounts, "Bank/global"];
 }
@@ -42,10 +42,10 @@ export function App() {
   const [open, setOpen] = useState(() => localStorage.getItem("panel:events") !== "closed");
   useEffect(() => localStorage.setItem("panel:events", open ? "open" : "closed"), [open]);
   useEffect(() => {
-    fetch("/api/me").then(async (r) => setAccountId(((await r.json()) as { accountId: string }).accountId));
+    fetch("/bank/api/me").then(async (r) => setAccountId(((await r.json()) as { accountId: string }).accountId));
   }, []);
   if (!accountId) return <div className="p-8 text-kumo-subtle">Opening your account…</div>;
-  return <Bank me={`Account/${accountId}`} accountId={accountId} open={open} setOpen={setOpen} />;
+  return <Bank me={`BankAccount/${accountId}`} accountId={accountId} open={open} setOpen={setOpen} />;
 }
 
 function Bank({ me, accountId, open, setOpen }: { me: string; accountId: string; open: boolean; setOpen: (open: boolean) => void }) {
@@ -93,7 +93,7 @@ function Bank({ me, accountId, open, setOpen }: { me: string; accountId: string;
                 />
               </header>
             }
-            footer={<You me={me} accountId={accountId} />}
+            footer={<You accountId={accountId} />}
           />
           <Sidebar.ResizeHandle />
         </Sidebar>

@@ -14,9 +14,11 @@ You get your own account, named by your IP address, with $100. Send money to a s
 
 | Object | One per | What it does |
 | --- | --- | --- |
-| `Account/<your IP>` | visitor | Holds the balance and sets money aside when you send. A frozen account bounces money sent to it. |
+| `BankAccount/<your IP>` | visitor | Holds the balance and sets money aside when you send. A frozen account bounces money sent to it. |
 | `Transfer/<id>` | transfer | The saga: `requested → review? → clearing → crediting → settling → completed`, or `→ refunding → refunded`. |
 | `Bank/global` | site | The clearing house everyone shares. It clears one transfer every 2.5 s, so yours waits behind strangers'. |
+
+The [CI example](/examples/ci/) runs in the same Worker and has its own `Account`, so this one is `BankAccount`. The page labels it "Account".
 
 - **Timers:** a transfer of $100 or more waits 12 s in `review`. It's an `after` timer, so it survives eviction.
 - **Messages:** every hop is a `deliver()` from one object's outbox. Each one waits 700 ms (the `pace` option) so you can see it travel.
@@ -31,7 +33,7 @@ export class Transfer extends DurableObject<Env> {
   machine = new DurableMachine(this, transferMachine, {
     input: (transferId) => ({ transferId }),
     actions: {
-      toAccount: ({ accountId, event }) => this.machine.deliver("Account", accountId, event),
+      toAccount: ({ accountId, event }) => this.machine.deliver("BankAccount", accountId, event),
       toBank: (event) => this.machine.deliver("Bank", "global", event),
     },
     pace: 700,

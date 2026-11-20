@@ -1,6 +1,4 @@
-import { routeAgentRequest } from "agents/routing";
-
-export { Account, Bank, Transfer } from "./objects";
+export { Bank, BankAccount, Transfer } from "./objects";
 
 type Action =
   | { action: "deposit" | "withdraw"; amount: number }
@@ -14,16 +12,16 @@ export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
 
-    if (url.pathname === "/api/me" && request.method === "GET") {
+    if (url.pathname === "/bank/api/me" && request.method === "GET") {
       const accountId = accountOf(request);
       ctx.waitUntil(env.Bank.getByName("global").send({ type: "account.seen", accountId }));
       return Response.json({ accountId });
     }
 
     // Only your own account takes commands, and only through here: WebSocket clients just watch.
-    if (url.pathname === "/api/me" && request.method === "POST") {
+    if (url.pathname === "/bank/api/me" && request.method === "POST") {
       const accountId = accountOf(request);
-      const account = env.Account.getByName(accountId);
+      const account = env.BankAccount.getByName(accountId);
       const input = await request.json<Action>();
       const at = Date.now();
       if (input.action === "reset") {
@@ -39,12 +37,12 @@ export default {
       return Response.json(await account.send(event as never));
     }
 
-    if (url.pathname.startsWith("/api/view/")) {
-      const [, , , kind, name] = url.pathname.split("/");
-      const namespace = kind === "transfer" ? env.Transfer : kind === "bank" ? env.Bank : env.Account;
+    if (url.pathname.startsWith("/bank/api/view/")) {
+      const [, , , , kind, name] = url.pathname.split("/");
+      const namespace = kind === "transfer" ? env.Transfer : kind === "bank" ? env.Bank : env.BankAccount;
       return Response.json(await namespace.getByName(decodeURIComponent(name ?? "")).view());
     }
 
-    return (await routeAgentRequest(request, env)) ?? new Response("Not found", { status: 404 });
+    return new Response("Not found", { status: 404 });
   },
 } satisfies ExportedHandler<Env>;

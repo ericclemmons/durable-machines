@@ -67,7 +67,7 @@ export function Simulator({
   }, [projects, repo]);
 
   const post = async (body: unknown) => {
-    const response = await fetch("/api/simulate", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+    const response = await fetch("/ci/api/simulate", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
     const result = (await response.json()) as SimResult;
     logResult(result);
     setResults((r) => [result, ...r].slice(0, 6));
@@ -75,7 +75,7 @@ export function Simulator({
   };
   const fire = (sim: Omit<Simulation, "repo"> & { repo?: string }) => post({ repo: project.repo, ...sim });
   const chaos = (mode: "overloaded" | "retryable", seconds: number) =>
-    fetch("/api/chaos", { method: "POST", body: JSON.stringify({ target: `Project/${project.id}`, mode, seconds }) });
+    fetch("/ci/api/chaos", { method: "POST", body: JSON.stringify({ target: `Project/${project.id}`, mode, seconds }) });
 
   const prod = project.productionBranch;
   const scenarios: Scenario[] = [
@@ -247,7 +247,7 @@ export function Simulator({
     setHovered(undefined);
     setResults([]);
     setSelectedNode(undefined);
-    await fetch("/api/reset", { method: "POST" });
+    await fetch("/ci/api/reset", { method: "POST" });
     for (const [id, saved] of Object.entries(savedSettings.current)) await sendTo(`Project/${id}`, { type: "settings.update", settings: saved });
   };
 

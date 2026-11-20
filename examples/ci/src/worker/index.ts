@@ -1,4 +1,3 @@
-import { routeAgentRequest } from "agents/routing";
 import { Effect } from "effect";
 import { githubPayload, type Simulation } from "../domain/github";
 import { accounts, installations, projects } from "../domain/registry";
@@ -17,12 +16,12 @@ export default {
   async fetch(request, env) {
     const url = new URL(request.url);
 
-    if (request.method === "POST" && url.pathname === "/webhooks/github") {
+    if (request.method === "POST" && url.pathname === "/ci/webhooks/github") {
       const result = await Effect.runPromise(ingest(env, request));
       return Response.json(result, { status: statusFor(result) });
     }
 
-    if (request.method === "POST" && url.pathname === "/api/simulate") {
+    if (request.method === "POST" && url.pathname === "/ci/api/simulate") {
       // Either a new simulated event, or a replay of an earlier delivery (same delivery id).
       const input = await request.json<(Simulation & { tamper?: boolean }) | { replay: Replay }>();
       const replay = "replay" in input ? input.replay : undefined;
@@ -30,7 +29,7 @@ export default {
       const body = JSON.stringify(payload);
       const deliveryId = replay?.deliveryId ?? crypto.randomUUID();
       const tamper = !replay && (input as Simulation).tamper;
-      const webhook = new Request(new URL("/webhooks/github", url), {
+      const webhook = new Request(new URL("/ci/webhooks/github", url), {
         method: "POST",
         body,
         headers: {
@@ -44,14 +43,14 @@ export default {
       return Response.json({ ...result, githubEvent: event, deliveryId, payload });
     }
 
-    const view = url.pathname.match(/^\/api\/view\/(account|project|installation)\/([\w-]+)$/);
+    const view = url.pathname.match(/^\/ci\/api\/view\/(account|project|installation)\/([\w-]+)$/);
     if (view) {
       const [, kind, name] = view as unknown as [string, string, string];
       const stub = kind === "account" ? env.Account.getByName(name) : kind === "project" ? env.Project.getByName(name) : env.Installation.getByName(name);
       return Response.json(await stub.view());
     }
 
-    if (request.method === "POST" && url.pathname === "/api/chaos") {
+    if (request.method === "POST" && url.pathname === "/ci/api/chaos") {
       const { target, mode, seconds } = await request.json<{ target: string; mode: ChaosMode | null; seconds: number }>();
       const [kind, name] = target.split("/") as [string, string];
       const stub = kind === "Account" ? env.Account.getByName(name) : env.Project.getByName(name);
@@ -60,18 +59,18 @@ export default {
     }
 
     // The debugger clock. The UI drives it over WebSocket; this route is for scripts.
-    if (url.pathname === "/api/clock") {
+    if (url.pathname === "/ci/api/clock") {
       const clock = env.Clock.getByName("global");
       if (request.method !== "POST") return Response.json(await clock.state());
       const { action, pace } = await request.json<{ action: "play" | "pause" | "next" | "nextMachine"; pace?: number }>();
       return Response.json(await clock.control(action, pace));
     }
 
-    if (url.pathname === "/api/topology") {
+    if (url.pathname === "/ci/api/topology") {
       return Response.json({ accounts, projects, installations });
     }
 
-    if (request.method === "POST" && url.pathname === "/api/reset") {
+    if (request.method === "POST" && url.pathname === "/ci/api/reset") {
       // Senders first, so nothing from the old run reaches an Account after it has been reset.
       await Promise.all([
         ...Object.keys(installations).map((id) => env.Installation.getByName(id).reset()),
@@ -82,6 +81,6 @@ export default {
       return Response.json({ ok: true });
     }
 
-    return (await routeAgentRequest(request, env)) ?? new Response("Not found", { status: 404 });
+    return new Response("Not found", { status: 404 });
   },
 } satisfies ExportedHandler<Env>;

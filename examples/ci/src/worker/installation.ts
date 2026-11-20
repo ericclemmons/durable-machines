@@ -6,7 +6,8 @@ import { installations, projectsForRepo } from "../domain/registry";
 import { installationMachine } from "../machines/installation";
 
 export class Installation extends DurableObject<Env> {
-  readonly machine = new DurableMachine(this, installationMachine, {
+  // Annotated: park reads this.env, whose Installation binding is typed from this class.
+  readonly machine: DurableMachine<typeof installationMachine> = new DurableMachine(this, installationMachine, {
     actions: {
       toAccount: ({ accountId, event }) => this.machine.deliver("Account", accountId, { type: "scm.event", event }),
     },

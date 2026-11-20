@@ -13,7 +13,7 @@ const OPENING_BALANCE = 100;
 const decodeStart = Schema.decodeUnknownSync(TransferStart);
 
 /** One account per visitor, named by IP. Visitors only watch it over WebSocket; changes go through the Worker. */
-export class Account extends DurableObject<Env> {
+export class BankAccount extends DurableObject<Env> {
   readonly machine = new DurableMachine(this, accountMachine, {
     input: (accountId) => ({ accountId, balance: OPENING_BALANCE, frozen: false }),
     actions: { toTransfer: ({ transferId, event }) => this.machine.deliver("Transfer", transferId, event) },
@@ -38,7 +38,7 @@ export class Transfer extends DurableObject<Env> {
   readonly machine = new DurableMachine(this, transferMachine, {
     createdBy: { event: "transfer.start", input: (event, transferId) => ({ transferId, ...decodeStart(event) }) },
     actions: {
-      toAccount: ({ accountId, event }) => this.machine.deliver("Account", accountId, event),
+      toAccount: ({ accountId, event }) => this.machine.deliver("BankAccount", accountId, event),
       toBank: (event) => this.machine.deliver("Bank", "global", event),
     },
     pace: PACE,
