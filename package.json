@@ -7,7 +7,8 @@
     "check": "pnpm --filter @durable-machines/site types && pnpm -r --if-present typecheck && pnpm --filter @durable-machines/example-ci check:graph && pnpm --filter @durable-machines/example-bank check:graph",
     "dev": "pnpm --filter @durable-machines/docs build && pnpm --filter @durable-machines/site dev",
     "dev:docs": "pnpm --filter @durable-machines/docs dev",
-    "deploy": "pnpm --filter @durable-machines/site run deploy"
+    "deploy": "pnpm --filter @durable-machines/site run deploy",
+    "preview": "pnpm --filter @durable-machines/site run preview"
   },
   "engines": {
     "node": ">=24"
