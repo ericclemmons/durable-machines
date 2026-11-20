@@ -1,317 +1,228 @@
-import { Badge, Button, Tabs, Text, Tooltip } from "@cloudflare/kumo";
-import { CodeHighlighted } from "@cloudflare/kumo/code";
-import { CaretDownIcon, CaretUpIcon, InfoIcon } from "@phosphor-icons/react";
-import { useEffect, useRef, useState, type KeyboardEvent, type PointerEvent as ReactPointerEvent } from "react";
-import { Deployments } from "./Deployments";
-import { activeIds, formatValue } from "./graph";
+import { Badge, Button, Text } from "@cloudflare/kumo";
 import {
+  Canvas,
+  Dock,
+  entryAt,
+  formatValue,
+  isInternalEntry,
+  Notice,
+  ObjectLabel,
+  objectPurpose,
   sendTo,
-  snapshotBefore,
-  setDockTab,
-  setPinned,
-  setSelectedNode,
+  StateBody,
+  stateAt,
   useAllViews,
   useClock,
-  useDockTab,
+  useDockOwner,
   useInspected,
-  usePinned,
-  useSelectedBuilds,
-  useSelectedNode,
+  useObjectState,
+  type NoticeValue,
+  type PartState,
   type Point,
-  type Snapshot,
-} from "./store";
-import { partOf, SystemMap } from "./SystemMap";
-import { entryAt, stateAt } from "./timeline";
+  type SystemPart,
+  type SystemWire,
+} from "@durable-machines/inspector";
+import type { ActorView, JournalEntry, MachineView } from "durable-machines/protocol";
+import { useEffect, useState } from "react";
+import { useSelectedBuilds } from "./builds";
+import { Deployments } from "./Deployments";
 import type { ProjectContext, ProjectRecord } from "./types";
-import { highlightJson, Notice, ObjectLabel, type NoticeValue } from "./ui";
-import { lineDiff } from "./diff";
 
-/** Ids with no descendant in the list: the active leaf states. */
-const leaves = (ids: string[]) => ids.filter((id) => !ids.some((o) => o.startsWith(`${id}.`)));
+/** The map part an address belongs to: "installation", "account", a project id, "worker" or "workflow". */
+export function partOf(address: string, accountId: string) {
+  if (address === "webhook") return "worker";
+  if (address === "BuildWorkflow" || address.startsWith("BuildWorkflow/")) return "workflow";
+  const [cls, name] = address.split("/");
+  if (cls === "Installation") return "installation";
+  if (cls === "Account") return name === accountId ? "account" : undefined;
+  if (cls === "Project") return name;
+  return undefined;
+}
 
-/** The part a diagram node id belongs to: "part:free-web:build" and "free-web:build/queued" are both "free-web". */
-const partOfNode = (id: string) => (id.startsWith("part:") ? id.slice(5) : id.slice(0, id.indexOf("/"))).replace(/:build$/, "");
+/** The build a Project's build box shows as of a point: the one the point is about, else the one picked in Deployments, else the newest. */
+function focusedBuild(owner: string, view: MachineView, point: Point | undefined, selected: Readonly<Record<string, string>>) {
+  const state = stateAt(owner, view, point);
+  const ctx = state.root.context as unknown as ProjectContext;
+  const entry = point?.owner === owner && !point.next ? entryAt(view, point) : undefined;
+  const pick = (id: string | undefined) => (id ? state.children.find((c) => c.id === id) : undefined);
+  const child: ActorView | undefined =
+    pick(entry?.actor) || pick(selected[owner.slice("Project/".length)]) || pick(ctx.active?.at(-1)?.buildId) || state.children.at(-1);
+  // At a build's own event, show where that event took it. A build that reached a final
+  // state is gone from the snapshot, so its value comes from the entry.
+  const atBuild = entry?.kind === "transition" && entry.actor !== view.machineId ? entry : undefined;
+  return { state, child, atBuild, done: atBuild ? !pick(atBuild.actor) || pick(atBuild.actor)?.status === "done" : child?.status === "done" };
+}
 
 /**
- * Every machine the run reached, on one canvas, with a dock below it for the
- * Deployments table and an object's state. The view follows the newest event,
- * or the next waiting hop while paused. Hover an event to see the system as
- * it was right after it, and click to pin that moment. Click a state or an
- * object to zoom to it and show its state.
+ * Every machine the run reached, on one canvas, with the Deployments table and an
+ * object's state docked below it. The build machine sits inside the Project that
+ * spawns it. Click an event to see the system as it was right after it.
  */
 export function Machines({ accountId, installationId, projects }: { accountId: string; installationId: string; projects: ProjectRecord[] }) {
   const views = new Map(useAllViews());
-  const inspected = useInspected();
-  const pinned = usePinned();
-  const selected = useSelectedNode();
   const clock = useClock();
-
-  // Newest event that isn't internal.
-  let latest: Point | undefined;
-  for (const [owner, v] of views)
-    for (const e of v.journal)
-      if (!e.event.type.startsWith("xstate.") && e.kind !== "unhandled" && e.kind !== "restored" && (!latest || e.at > latest.at))
-        latest = { owner, seq: e.seq, at: e.at };
-
-  const ownerOf = (p: string | undefined) =>
-    p === "installation"
-      ? `Installation/${installationId}`
-      : p === "account"
-        ? `Account/${accountId}`
-        : p && projects.some((x) => x.id === p)
-          ? `Project/${p}`
-          : undefined;
-  const wire = (from: string, to: string | undefined) => {
-    const a = partOf(from, accountId);
-    const b = to && partOf(to, accountId);
-    return a && b ? [`wire:${a}→${b}`] : undefined;
-  };
-  // An event's focus: the states its transition left and entered and its label, or the wire a message took.
-  const focusOf = (at: Point): string[] | undefined => {
-    const view = views.get(at.owner);
-    const e = entryAt(view, at);
-    if (!e) return undefined;
-    if (e.kind === "delivered") return wire(at.owner, e.target);
-    const p = partOf(at.owner, accountId);
-    if (!p) return undefined;
-    const prefix = at.owner.startsWith("Project/") && e.actor !== view?.machineId ? `${p}:build` : p;
-    if (e.kind !== "transition") return [prefix];
-    const before = leaves(activeIds(e.from));
-    const after = leaves(activeIds(e.to));
-    const changed = [...after.filter((id) => !before.includes(id)), ...before.filter((id) => !after.includes(id))];
-    return [...(changed.length ? changed : after).map((id) => `${prefix}/${id}`), `edge:${prefix}|${e.event.type}`];
-  };
-
-  // Most specific first: the event you hover or pinned, the node you clicked, the next waiting hop, the newest event.
-  const [head] = clock.parked;
-  const focus = inspected ? focusOf(inspected) : selected ? [selected] : head ? wire(head.owner, head.to) : latest && focusOf(latest);
-
-  // The state the dock shows: the object you clicked, else the one whose event you hover, else the newest event's.
-  const known = (owner: string | undefined) => (owner && views.has(owner) ? owner : undefined);
-  const owner = known(selected && ownerOf(partOfNode(selected))) ?? known(inspected?.owner) ?? known(latest?.owner) ?? `Installation/${installationId}`;
-  const at = inspected ? entryAt(views.get(inspected.owner), inspected) : undefined;
-
-  return (
-    <section className="flex h-screen min-h-0 min-w-0 flex-1 flex-col bg-kumo-base">
-      <div className="relative min-h-0 flex-1">
-        <SystemMap
-          accountId={accountId}
-          installationId={installationId}
-          projects={projects}
-          point={inspected}
-          zoomTo={focus}
-          onSelect={(id) => {
-            setSelectedNode(id);
-            setDockTab("state");
-          }}
-          onBackground={() => setSelectedNode(undefined)}
-        />
-        {inspected && (
-          <div className="absolute right-3 top-3 z-10 flex items-center gap-2 rounded-lg bg-kumo-base/95 px-2 py-1 text-sm shadow-xs ring ring-kumo-line">
-            <Badge variant="purple">As of {new Date(inspected.at).toLocaleTimeString([], { hour12: false })}</Badge>
-            <ObjectLabel address={inspected.owner} />
-            <code className="font-mono text-[0.9em] text-kumo-strong">{at?.event.type}</code>
-            {pinned && (
-              <Button variant="ghost" size="xs" onClick={() => setPinned(undefined)}>
-                Back to live
-              </Button>
-            )}
-          </div>
-        )}
-        <div className="absolute bottom-2 left-2 z-10">
-          <Tooltip
-            content={
-              <span>
-                <span className="text-orange-300">Orange</span>: active state and the transition just taken. <span className="text-sky-300">Blue</span>:
-                messages between objects, animated while on their way, dashed and still while waiting. Click a state to zoom to it; scroll to zoom, drag to pan.
-              </span>
-            }
-            render={<Button variant="secondary" shape="square" size="sm" icon={InfoIcon} aria-label="How to read the diagram" />}
-          />
-        </div>
-      </div>
-      <Dock owner={owner} point={inspected} projects={projects} />
-    </section>
-  );
-}
-
-const DOCK_MIN = 120;
-
-/** Below the canvas, like a terminal: the Deployments table, or an object's state. Drag its top edge to resize. */
-function Dock({ owner, point, projects }: { owner: string; point?: Point; projects: ProjectRecord[] }) {
-  const tab = useDockTab();
-  const [open, setOpen] = useState(() => localStorage.getItem("dock:open") !== "closed");
-  const [height, setHeight] = useState(() => Number(localStorage.getItem("dock:height")) || 300);
-  useEffect(() => localStorage.setItem("dock:open", open ? "open" : "closed"), [open]);
-  useEffect(() => localStorage.setItem("dock:height", String(height)), [height]);
-  const drag = useRef<{ y: number; height: number }>(undefined);
-  const clamp = (h: number) => Math.round(Math.min(window.innerHeight - 160, Math.max(DOCK_MIN, h)));
-
-  const onPointerDown = (e: ReactPointerEvent<HTMLDivElement>) => {
-    e.currentTarget.setPointerCapture(e.pointerId);
-    drag.current = { y: e.clientY, height };
-  };
-  const onPointerMove = (e: ReactPointerEvent) => drag.current && setHeight(clamp(drag.current.height + drag.current.y - e.clientY));
-  const onKeyDown = (e: KeyboardEvent) => {
-    if (e.key === "ArrowUp") setHeight((h) => clamp(h + 24));
-    if (e.key === "ArrowDown") setHeight((h) => clamp(h - 24));
-  };
-
-  const state = useObjectState(owner, point);
-  const showTab = (value: "deployments" | "state") => {
-    setDockTab(value);
-    setOpen(true);
-  };
-
-  return (
-    <div className="relative flex shrink-0 flex-col border-t border-kumo-line bg-kumo-base" style={open ? { height } : undefined}>
-      {open && (
-        <div
-          role="separator"
-          aria-orientation="horizontal"
-          aria-label="Resize the dock"
-          aria-valuenow={height}
-          tabIndex={0}
-          className="absolute inset-x-0 -top-1.5 z-20 h-3 cursor-row-resize after:absolute after:inset-x-0 after:top-1.5 after:h-0.5 hover:after:bg-kumo-brand focus-visible:after:bg-kumo-brand"
-          onPointerDown={onPointerDown}
-          onPointerMove={onPointerMove}
-          onPointerUp={() => (drag.current = undefined)}
-          onKeyDown={onKeyDown}
-        />
-      )}
-      <div className="flex min-w-0 items-center gap-2 border-b border-kumo-line px-2">
-        <Button
-          variant="ghost"
-          shape="square"
-          size="xs"
-          icon={open ? CaretDownIcon : CaretUpIcon}
-          aria-label={open ? "Hide the dock" : "Show the dock"}
-          aria-expanded={open}
-          onClick={() => setOpen(!open)}
-        />
-        <Tabs
-          variant="underline"
-          value={tab}
-          onValueChange={(v) => showTab(v as "deployments" | "state")}
-          tabs={[
-            { value: "deployments", label: "Deployments" },
-            {
-              value: "state",
-              label: (
-                <span className="inline-flex items-center gap-1.5">
-                  State <ObjectLabel address={owner} className="font-normal text-kumo-subtle" />
-                </span>
-              ),
-            },
-          ]}
-        />
-        {tab === "state" && (
-          <span className="ml-auto flex min-w-0 items-center gap-2">
-            <Badge variant="orange">
-              <span className="truncate font-mono text-[0.9em]">{formatValue(state.value)}</span>
-            </Badge>
-            {state.isProject && (
-              <Button variant="secondary-destructive" size="xs" onClick={() => void state.command({ type: "build.approve", buildId: 42 })}>
-                Send invalid event
-              </Button>
-            )}
-          </span>
-        )}
-      </div>
-      {open && (
-        <div className="min-h-0 flex-1 overflow-auto">
-          {tab === "deployments" ? (
-            <Deployments projects={projects} />
-          ) : (
-            <div className="grid gap-2 p-3">
-              <Notice value={state.notice} />
-              {!state.exact && (
-                <Text size="xs" variant="secondary">
-                  This event is from before the page loaded: state values are as of the event, context is live.
-                </Text>
-              )}
-              {state.before ? (
-                <JsonDiff before={state.before} after={state.json} />
-              ) : (
-                <div className="text-xs">
-                  <CodeHighlighted code={JSON.stringify(state.json, null, 2)} lang="json" showCopyButton />
-                </div>
-              )}
-            </div>
-          )}
-        </div>
-      )}
-    </div>
-  );
-}
-
-/** An object's state, live or as of a point, and a way to send it an event. */
-function useObjectState(owner: string, point?: Point) {
-  const views = new Map(useAllViews());
   const selectedBuilds = useSelectedBuilds();
+  const point = useInspected();
+  const installation = views.get(`Installation/${installationId}`);
+  const account = views.get(`Account/${accountId}`);
+  const projectViews = projects.map((p) => [p, views.get(`Project/${p.id}`)] as const);
+  const ready = Boolean(installation && account && projectViews.every(([, v]) => v));
+
+  // Only machines that took part in this run appear: an object once it handled an
+  // event, the build machine once a build was spawned, the Workflow once one was created.
+  const took = (v: MachineView | undefined) => Boolean(v?.journal.some((e) => !isInternalEntry(e)));
+  const spawned = (v: MachineView | undefined) => Boolean(v && (v.children.length || v.journal.some((e) => e.actor !== v.machineId)));
+  const present = new Set<string>();
+  if (took(installation)) present.add("installation");
+  if (took(account)) present.add("account");
+  for (const [p, v] of projectViews) {
+    if (took(v)) present.add(p.id);
+    if (spawned(v)) present.add(`${p.id}:build`);
+  }
+  // A hop on its way, or waiting for Next, brings its receiver in, so its wire has somewhere to go.
+  for (const address of [...clock.parked.map((p) => p.to), ...[...views.values()].flatMap((v) => v.outbox.map((o) => o.to))]) {
+    const to = partOf(address, accountId);
+    if (to && to !== "workflow") present.add(to);
+  }
+  if (present.size) present.add("worker");
+  if (
+    account?.journal.some((e) => e.event.type.startsWith("xstate.done.actor") && JSON.stringify(e.from).includes("dispatching")) ||
+    clock.parked.some((p) => p.to === "BuildWorkflow") ||
+    projectViews.some(([, v]) => v?.journal.some((e) => e.source.startsWith("BuildWorkflow")))
+  )
+    present.add("workflow");
+
+  const parts: SystemPart[] = !ready
+    ? []
+    : [
+        { id: "worker", title: "Webhook Worker", subtitle: "Verifies and decodes webhooks" },
+        {
+          id: "installation",
+          title: `Installation/${installationId}`,
+          subtitle: objectPurpose("Installation") ?? "",
+          definition: installation?.definitions.installation,
+          direction: "RIGHT" as const,
+        },
+        { id: "account", title: `Account/${accountId}`, subtitle: objectPurpose("Account") ?? "", definition: account?.definitions.account },
+        ...projectViews.map(([p, v]) => ({
+          id: p.id,
+          title: `Project/${p.id}`,
+          subtitle: `${objectPurpose("Project") ?? ""} · ${p.repo}`,
+          definition: v?.definitions.project,
+          children: present.has(`${p.id}:build`)
+            ? [{ id: `${p.id}:build`, title: "Build machine", subtitle: "A child actor of the Project, one per build", definition: v?.definitions.build, direction: "RIGHT" as const }]
+            : [],
+        })),
+        { id: "workflow", title: "BuildWorkflow", subtitle: "Runs the steps" },
+      ].filter((p) => present.has(p.id));
+  const wires: SystemWire[] = [
+    { source: "worker", target: "installation", events: ["scm.event"] },
+    { source: "installation", target: "account", events: ["scm.event"] },
+    { source: "account", target: "workflow", events: ["create()"] },
+    ...projects.flatMap((p) => [
+      { source: "account", target: p.id, events: ["scm.event", "build.start"] },
+      { source: p.id, target: "account", events: ["build.requested", "build.finished"] },
+      { source: "workflow", target: p.id, events: ["build.step", "build.completed"] },
+    ]),
+  ].filter((w) => present.has(w.source) && present.has(w.target));
+
+  const part = (address: string) => partOf(address, accountId);
+  const actorPart = (owner: string, entry: JournalEntry) => {
+    const p = part(owner);
+    return p && owner.startsWith("Project/") && entry.actor !== views.get(owner)?.machineId ? `${p}:build` : p;
+  };
+  const statesAt = (at: Point | undefined): PartState[] => {
+    const states: PartState[] = [];
+    if (installation) states.push({ part: "installation", value: stateAt(`Installation/${installationId}`, installation, at).root.value });
+    if (account) states.push({ part: "account", value: stateAt(`Account/${accountId}`, account, at).root.value });
+    for (const [p, v] of projectViews) {
+      if (!v) continue;
+      const { state, child, atBuild, done } = focusedBuild(`Project/${p.id}`, v, at, selectedBuilds);
+      states.push({ part: p.id, value: state.root.value });
+      states.push({ part: `${p.id}:build`, value: atBuild ? atBuild.to : child?.value, done });
+    }
+    return states;
+  };
+
+  const ownerOf = (p: string) => {
+    const id = p.replace(/:build$/, "");
+    return id === "installation" ? `Installation/${installationId}` : id === "account" ? `Account/${accountId}` : projects.some((x) => x.id === id) ? `Project/${id}` : undefined;
+  };
+  const owner = useDockOwner(ownerOf, `Installation/${installationId}`);
+  const ownerView = views.get(owner);
+  const isProject = owner.startsWith("Project/");
+  const build = isProject && ownerView ? focusedBuild(owner, ownerView, point, selectedBuilds) : undefined;
+  const buildId = build?.child?.id ?? build?.atBuild?.actor;
+  const state = useObjectState(owner, point, (snap) => {
+    const child = buildId ? snap.children.find((c) => c.id === buildId) : undefined;
+    return child ? { [`build ${child.id.replace(/^.*-(\d+)$/, "#$1")}`]: { status: child.status, value: child.value, context: child.context } } : {};
+  });
   const [notice, setNotice] = useState<NoticeValue>();
   useEffect(() => setNotice(undefined), [owner]);
-  const view = views.get(owner);
   const command = async (event: { type: string; [k: string]: unknown }) => {
     const result = await sendTo(owner, event);
     setNotice(result.ok ? { ok: true, text: `${event.type} accepted → ${formatValue(result.value)}` } : { ok: false, text: result.error });
   };
-  const isProject = owner.startsWith("Project/");
-  if (!view) return { value: undefined, json: {}, before: undefined, exact: true, isProject, notice, command };
-  const state = stateAt(owner, view, point);
-  const ctx = state.root.context as unknown as ProjectContext;
-  const pointEntry = point?.owner === owner ? entryAt(view, point) : undefined;
-  const build = isProject
-    ? (state.children.find((c) => c.id === pointEntry?.actor) ??
-      state.children.find((c) => c.id === selectedBuilds[owner.split("/")[1]!]) ??
-      state.children.find((c) => c.id === ctx.active?.at(-1)?.buildId) ??
-      state.children.at(-1))
-    : undefined;
-  const buildId = build?.id ?? (pointEntry && pointEntry.actor !== view.machineId ? pointEntry.actor : undefined);
-  const jsonOf = (snap: Snapshot, live: boolean) => {
-    const child = buildId ? snap.children.find((c) => c.id === buildId) : undefined;
-    return {
-      value: snap.root.value,
-      context: snap.root.context,
-      ...(child ? { [`build ${child.id.replace(/^.*-(\d+)$/, "#$1")}`]: { status: child.status, value: child.value, context: child.context } } : {}),
-      ...(live && view.outbox.length ? { outbox: view.outbox.map((o) => ({ to: o.to, type: o.event.type, attempts: o.attempts })) } : {}),
-    };
-  };
-  const json = jsonOf(state, !point);
-  // At an event of this object: the state just before it, to show what it changed.
-  const prior = pointEntry && state.exact ? snapshotBefore(owner, pointEntry.seq) : undefined;
-  const before = prior ? jsonOf(prior, false) : undefined;
-  return { value: state.root.value, json, before, exact: state.exact, isProject, notice, command };
-}
+  const asOf = point && <Badge variant="purple">As of {new Date(point.at).toLocaleTimeString([], { hour12: false })}</Badge>;
 
-/** The state as JSON, with what the event changed: removed lines in red, added lines in green. Scrolls to the first change. */
-function JsonDiff({ before, after }: { before: unknown; after: unknown }) {
-  const lines = lineDiff(JSON.stringify(before, null, 2).split("\n"), JSON.stringify(after, null, 2).split("\n"));
-  const changed = lines.filter((l) => l.op !== " ").length;
-  const first = useRef<HTMLDivElement>(null);
-  const key = JSON.stringify(after);
-  useEffect(() => first.current?.scrollIntoView({ block: "center", behavior: "smooth" }), [key]);
-  let marked = false;
   return (
-    <div className="grid gap-1">
-      <Text size="xs" variant="secondary">
-        {changed
-          ? `What this event changed: ${lines.filter((l) => l.op === "-").length} lines removed, ${lines.filter((l) => l.op === "+").length} added.`
-          : "This event changed nothing in the state."}
-      </Text>
-      <pre className="overflow-auto rounded-lg bg-kumo-elevated py-2 font-mono text-xs leading-5 ring ring-kumo-line">
-        {lines.map((l, i) => {
-          const ref = l.op !== " " && !marked ? ((marked = true), first) : undefined;
-          return (
-            <div key={i} ref={ref} className={`px-3 ${l.op === "+" ? "bg-emerald-500/15" : l.op === "-" ? "bg-red-500/15 text-kumo-subtle" : ""}`}>
-              <span className={`mr-2 inline-block w-3 select-none ${l.op === "+" ? "text-emerald-700" : l.op === "-" ? "text-red-700" : "text-kumo-inactive"}`}>
-                {l.op}
-              </span>
-              {highlightJson(l.text)}
-            </div>
-          );
-        })}
-      </pre>
-    </div>
+    <Canvas
+      parts={parts}
+      wires={wires}
+      partOf={part}
+      actorPart={actorPart}
+      statesAt={statesAt}
+      extraHot={(o, entry) => (entry.kind === "transition" && entry.event.type === "xstate.done.actor" && part(o) === "account" ? ["account→workflow|create()"] : [])}
+      ready={ready}
+      emptyText="No machine has run yet. Machines appear here as the scenario reaches them."
+      dock={
+        <Dock
+          sections={[
+            {
+              grow: 3,
+              label: (
+                <>
+                  <Text size="sm" bold>
+                    Deployments
+                  </Text>
+                  {asOf}
+                </>
+              ),
+              body: <Deployments projects={projects} point={point} />,
+            },
+            {
+              grow: 2,
+              label: (
+                <>
+                  <Text size="sm" bold>
+                    State
+                  </Text>
+                  <ObjectLabel address={owner} className="min-w-0 text-sm text-kumo-subtle" />
+                </>
+              ),
+              actions: (
+                <>
+                  {!state.missing && (
+                    <Badge variant="orange">
+                      <span className="truncate font-mono text-[0.9em]">{formatValue(state.value)}</span>
+                    </Badge>
+                  )}
+                  {isProject && (
+                    <Button variant="secondary-destructive" size="xs" onClick={() => void command({ type: "build.approve", buildId: 42 })}>
+                      Send invalid event
+                    </Button>
+                  )}
+                </>
+              ),
+              body: (
+                <StateBody state={state}>
+                  <Notice value={notice} />
+                </StateBody>
+              ),
+            },
+          ]}
+        />
+      }
+    />
   );
 }

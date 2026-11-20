@@ -2,17 +2,16 @@ import { Button, Sidebar, Text } from "@cloudflare/kumo";
 import { ShikiProvider } from "@cloudflare/kumo/code";
 import { BankIcon, SidebarSimpleIcon } from "@phosphor-icons/react";
 import { useEffect, useState } from "react";
-import { Canvas } from "./Canvas";
-import { EventPanel } from "./EventPanel";
-import { useAllViews, useMachine, type MachineKind } from "./store";
+import { EventPanel, useAllViews, useMachine } from "@durable-machines/inspector";
+import { BankMap } from "./BankMap";
 import { You } from "./You";
 
 /** How many of your latest transfers, and their counterparties, the canvas follows. */
 const FOLLOW = 2;
 
 function Connection({ address }: { address: string }) {
-  const [kind, ...rest] = address.split("/");
-  useMachine(kind as MachineKind, rest.join("/"));
+  const [kind = "", ...rest] = address.split("/");
+  useMachine(kind, rest.join("/"));
   return null;
 }
 
@@ -26,7 +25,7 @@ function useFollowed(me: string) {
   const transfers: string[] = [];
   for (const o of [...(views.get(me)?.outbox ?? [])].reverse()) if (o.to.startsWith("Transfer/") && !transfers.includes(o.to)) transfers.push(o.to);
   for (const e of [...(views.get(me)?.journal ?? [])].reverse()) {
-    const peer = e.kind === "delivered" ? e.target : e.kind === "transition" ? e.source : undefined;
+    const peer = e.kind === "sent" ? e.target : e.kind === "transition" ? e.source : undefined;
     if (peer?.startsWith("Transfer/") && !transfers.includes(peer)) transfers.push(peer);
     if (transfers.length === FOLLOW) break;
   }
@@ -69,6 +68,7 @@ function Bank({ me, accountId, open, setOpen }: { me: string; accountId: string;
       >
         <Sidebar aria-label="Events">
           <EventPanel
+            emptyText="No events yet. Deposit or send some money to see what happens."
             header={
               <header className="flex items-center gap-2.5 border-b border-kumo-line px-3 py-2">
                 <div className="grid size-7 shrink-0 place-items-center rounded-lg bg-kumo-brand text-white">
@@ -109,7 +109,7 @@ function Bank({ me, accountId, open, setOpen }: { me: string; accountId: string;
               className="absolute left-3 top-3 z-20"
             />
           )}
-          <Canvas keys={keys} me={me} />
+          <BankMap keys={keys} me={me} />
         </main>
       </Sidebar.Provider>
     </ShikiProvider>

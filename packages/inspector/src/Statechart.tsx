@@ -21,7 +21,7 @@ const roundedPath = (points: ChartEdge["points"]) => {
   return `${d} L ${last.x} ${last.y}`;
 };
 
-const finalFill = (key: string) => (key === "succeeded" ? "fill-emerald-500" : key === "failed" || key === "rejected" ? "fill-red-500" : "fill-neutral-600");
+const finalFill = (key: string) => (key === "succeeded" || key === "completed" ? "fill-emerald-500" : key === "failed" || key === "rejected" ? "fill-red-500" : "fill-neutral-600");
 
 export type ChartSvgProps = {
   chart: Chart;
@@ -149,13 +149,13 @@ export function ChartSvg({
               width={n.width}
               height={n.height}
               rx={12}
-              className={on ? "fill-orange-500/5 stroke-orange-500/70" : "fill-kumo-elevated stroke-neutral-300"}
+              className={`state-fill ${on ? "state-on fill-orange-500/5 stroke-orange-500/70" : "fill-kumo-elevated stroke-neutral-300"}`}
               strokeWidth={1.5}
               strokeDasharray={n.region ? "6 4" : undefined}
             >
               {n.description && <title>{n.description}</title>}
             </rect>
-            <text x={n.x + 12} y={n.y + 19} className={`text-[12px] font-semibold ${on ? "fill-orange-700" : "fill-neutral-700"}`}>
+            <text x={n.x + 12} y={n.y + 19} className={`state-fill text-[12px] font-semibold ${on ? "state-on fill-orange-700" : "fill-neutral-700"}`}>
               {n.region ? "∥ " : n.initial ? "● " : ""}
               {n.key}
             </text>
@@ -255,14 +255,16 @@ export function ChartSvg({
           <g key={n.id} {...click(n)}>
             {ring(n)}
             {on && (
-              <rect
-                x={n.x - 3}
-                y={n.y - 3}
-                width={n.width + 6}
-                height={n.height + 6}
-                rx={n.kind === "choice" ? 6 : 13}
-                className="node-glow fill-orange-500/20"
-              />
+              <g className="state-enter" style={{ transformOrigin: `${n.x + n.width / 2}px ${n.y + n.height / 2}px` }}>
+                <rect
+                  x={n.x - 3}
+                  y={n.y - 3}
+                  width={n.width + 6}
+                  height={n.height + 6}
+                  rx={n.kind === "choice" ? 6 : 13}
+                  className="node-glow fill-orange-500/20"
+                />
+              </g>
             )}
             <rect
               x={n.x}
@@ -270,7 +272,7 @@ export function ChartSvg({
               width={n.width}
               height={n.height}
               rx={n.kind === "choice" ? 4 : 10}
-              className={`${fill} ${n.kind === "any" ? "stroke-neutral-500" : on ? "stroke-orange-700" : "stroke-neutral-400"}`}
+              className={`state-fill ${on ? "state-on" : ""} ${fill} ${n.kind === "any" ? "stroke-neutral-500" : on ? "stroke-orange-700" : "stroke-neutral-400"}`}
               strokeWidth={final ? 3 : 1.5}
               strokeDasharray={n.kind === "any" ? "4 3" : undefined}
             >
@@ -291,7 +293,7 @@ export function ChartSvg({
               x={n.x + n.width / 2}
               y={n.y + 21}
               textAnchor="middle"
-              className={`text-[12px] ${on ? "fill-kumo-base font-semibold" : n.kind === "any" ? "fill-neutral-600 italic" : "fill-neutral-800"}`}
+              className={`state-fill text-[12px] ${on ? "state-on fill-kumo-base font-semibold" : n.kind === "any" ? "fill-neutral-600 italic" : "fill-neutral-800"}`}
             >
               {n.kind === "choice" ? "◇ " : n.initial ? "● " : ""}
               {n.key}
@@ -301,7 +303,7 @@ export function ChartSvg({
                 x={n.x + n.width / 2}
                 y={n.y + 34}
                 textAnchor="middle"
-                className={`font-mono text-[10px] ${on ? "fill-kumo-elevated" : n.invoke ? "fill-sky-600" : "fill-amber-600"}`}
+                className={`state-fill font-mono text-[10px] ${on ? "state-on fill-kumo-elevated" : n.invoke ? "fill-sky-600" : "fill-amber-600"}`}
               >
                 {n.invoke ? `invoke ${n.invoke}` : `timeout ${n.timeout}`}
               </text>

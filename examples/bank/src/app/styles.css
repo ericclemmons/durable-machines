@@ -1,41 +1,8 @@
 @source "../../node_modules/@cloudflare/kumo/dist/**/*.{js,jsx,ts,tsx}";
 @import "@cloudflare/kumo/styles/tailwind";
 @import "tailwindcss";
-
+@import "@durable-machines/inspector/styles.css";
 
 :root {
   color-scheme: light;
 }
-
-@keyframes flash {
-  from { stroke-opacity: 1; filter: drop-shadow(0 0 4px var(--color-orange-500)); }
-  to { stroke-opacity: 0.85; filter: none; }
-}
-.edge-hot { animation: flash 1.2s ease-out; }
-
-@keyframes glow {
-  0%, 100% { opacity: 0.35; }
-  50% { opacity: 0.9; }
-}
-.node-glow { animation: glow 1.6s ease-in-out infinite; }
-
-@keyframes enter {
-  from { opacity: 0; transform: translateY(-4px); background-color: rgb(246 130 31 / 0.15); }
-  to { opacity: 1; transform: none; }
-}
-.row-enter { animation: enter 0.6s ease-out; }
-
-@keyframes ping-once {
-  0% { box-shadow: 0 0 0 0 rgb(246 130 31 / 0.7); }
-  100% { box-shadow: 0 0 0 12px rgb(246 130 31 / 0); }
-}
-.ping { animation: ping-once 0.9s ease-out; }
-
-@keyframes dash { to { stroke-dashoffset: -24; } }
-.edge-flow { animation: dash 0.8s linear infinite; }
-
-@keyframes event-enter {
-  from { opacity: 0; transform: translateY(12px); }
-  to { opacity: 1; transform: none; }
-}
-.event-enter { animation: event-enter 0.35s ease-out; }

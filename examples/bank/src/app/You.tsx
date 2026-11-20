@@ -2,9 +2,7 @@ import { Badge, Button, Select, Text } from "@cloudflare/kumo";
 import { ArrowDownIcon, ArrowUpIcon, PaperPlaneTiltIcon, SnowflakeIcon } from "@phosphor-icons/react";
 import { useState } from "react";
 import type { SendResult } from "durable-machines/protocol";
-import { formatValue } from "./graph";
-import { useView } from "./store";
-import { Notice, type NoticeValue } from "./ui";
+import { formatValue, Notice, useView, type NoticeValue } from "@durable-machines/inspector";
 
 type AccountContext = {
   balance: number;

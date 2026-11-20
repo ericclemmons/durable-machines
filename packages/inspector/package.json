@@ -1,0 +1,34 @@
+{
+  "name": "@durable-machines/inspector",
+  "private": true,
+  "description": "Watch durable machines live: statecharts, the system map and every object's journal.",
+  "type": "module",
+  "sideEffects": ["*.css"],
+  "exports": {
+    ".": "./src/index.ts",
+    "./styles.css": "./src/styles.css",
+    "./package.json": "./package.json"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "durable-machines": "workspace:*"
+  },
+  "peerDependencies": {
+    "@cloudflare/kumo": "^2.19.0",
+    "@phosphor-icons/react": "^2.1.10",
+    "agents": "^0.33.0",
+    "elkjs": "^0.12.1",
+    "react": "^19.3.1"
+  },
+  "devDependencies": {
+    "@cloudflare/kumo": "^2.19.0",
+    "@phosphor-icons/react": "^2.1.10",
+    "@types/react": "^19.3.0",
+    "agents": "^0.33.0",
+    "elkjs": "^0.12.1",
+    "react": "^19.3.1",
+    "typescript": "^7.0.2"
+  }
+}

@@ -2,8 +2,8 @@ import { Button, Sidebar, Text } from "@cloudflare/kumo";
 import { ShikiProvider } from "@cloudflare/kumo/code";
 import { GearSixIcon, SidebarSimpleIcon } from "@phosphor-icons/react";
 import { useEffect, useState } from "react";
-import { EventPanel } from "./EventPanel";
-import { useClockConnection, useMachine } from "./store";
+import { EventPanel, useClockConnection, useMachine } from "@durable-machines/inspector";
+import { buildLabel, busy, runningBuilds } from "./builds";
 import { Machines } from "./Machines";
 import { Simulator } from "./Simulator";
 import type { ProjectRecord, Topology } from "./types";
@@ -56,6 +56,11 @@ export function App() {
       >
         <Sidebar aria-label="Events">
           <EventPanel
+            emptyText="No events yet. Pick a scenario and press play."
+            actorLabel={buildLabel}
+            running={runningBuilds}
+            busy={busy}
+            sendingText="Resetting and sending the scenario's webhooks…"
             header={
               <header className="flex items-center gap-2.5 border-b border-kumo-line px-3 py-2">
                 <div className="grid size-7 shrink-0 place-items-center rounded-lg bg-kumo-brand text-white">
