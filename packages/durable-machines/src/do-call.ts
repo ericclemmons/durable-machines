@@ -1,4 +1,4 @@
-import { Data, Effect, Schedule } from "effect";
+import { Data, Effect, Predicate, Schedule } from "effect";
 
 // Calls into another Durable Object, following
 // https://developers.cloudflare.com/durable-objects/best-practices/error-handling/
@@ -13,12 +13,28 @@ export class DurableObjectCallError extends Data.TaggedError("DurableObjectCallE
   message: string;
 }> {}
 
+const flagged = (error: unknown, flag: "overloaded" | "retryable" | "remote" | "durableObjectReset") =>
+  Predicate.hasProperty(error, flag) && Boolean(error[flag]);
+
 export const classify = (error: unknown): FailureKind => {
-  const e = error as { overloaded?: boolean; retryable?: boolean; remote?: boolean } | null;
-  if (e?.overloaded) return "overloaded";
-  if (e?.retryable) return "retryable";
-  if (e?.remote) return "remote";
+  if (flagged(error, "overloaded")) return "overloaded";
+  if (flagged(error, "retryable") || flagged(error, "durableObjectReset")) return "retryable";
+  // A copy loaded by ID; restartIfNameless ends it, so the next attempt reaches a named one.
+  if (String(error).includes("could not determine its Durable Object name")) return "retryable";
+  if (flagged(error, "remote")) return "remote";
   return "unknown";
+};
+
+/**
+ * An object first loaded by ID (the dashboard's Data Studio, the Query API, or the
+ * local explorer) has no `ctx.id.name`, and named callers reuse that copy until it
+ * is evicted, so every Lifecycle startup fails (workerd#8537). End that copy once
+ * the call that loaded it has finished; the next call by name starts a named one.
+ * `DurableMachine` does this itself. Use it as `Lifecycle.install(restartIfNameless(this, this.ctx))`.
+ */
+export const restartIfNameless = <Host>(host: Host, ctx: DurableObjectState): Host => {
+  if (ctx.id.name === undefined) setTimeout(() => ctx.abort("Loaded by ID without a name; restarting"), 0);
+  return host;
 };
 
 /**

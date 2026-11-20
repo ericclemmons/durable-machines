@@ -55,12 +55,12 @@ export class Clock extends LifecycleCapability {
 
   /** Release the oldest parked hop. Skips hops whose owner stopped waiting. */
   async next(): Promise<Parked | undefined> {
-    while (this.#state.parked.length) {
+    for (;;) {
       const [head, ...rest] = this.#state.parked;
+      if (!head) return undefined;
       this.#save({ parked: rest });
-      if (await this.#options.release(head!).catch(() => false)) return head;
+      if (await this.#options.release(head).catch(() => false)) return head;
     }
-    return undefined;
   }
 
   /**
