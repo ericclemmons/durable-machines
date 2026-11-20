@@ -11,7 +11,11 @@ export type JournalEntry = {
   at: number;
   /** Actor inside this Durable Object: the root machine id, or a child id. */
   actor: string;
-  kind: "transition" | "restored" | "unhandled" | "rejected" | "duplicate" | "delivered" | "retrying" | "dead-letter";
+  /**
+   * `sent`: a message the transition just before it queued in the outbox.
+   * `delivered`: only in entries written before messages were journaled as `sent`.
+   */
+  kind: "transition" | "restored" | "unhandled" | "rejected" | "duplicate" | "sent" | "delivered" | "retrying" | "dead-letter";
   event: AnyEvent;
   from: unknown;
   to: unknown;
@@ -57,7 +61,10 @@ export type MachineCommit = {
   deadLetters: number;
 };
 
-/** Sent after a reset: the client replaces its view. */
+/** Pages back through the whole journal: entries before `before` (a `seq`), oldest first. */
+export type HistoryRequest = { before?: number; limit?: number };
+
+/** Sent after a reset, and when an object made with `createdBy` is created: the client replaces its view. */
 export type MachineReset = { type: "xstate.reset"; view: MachineView };
 
 export type SendResult = { ok: true; value: unknown; duplicate?: boolean } | { ok: false; error: string };
