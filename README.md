@@ -36,7 +36,7 @@ One Worker, `durable-machines`, serves everything. It is configured in [`apps/si
 ```sh
 pnpm build          # the package, the docs, then `cf build` of the Worker
 pnpm run deploy     # `cf deploy --prebuilt` of that build
-pnpm run preview    # `cf previews deploy --prebuilt`, a preview named after the branch
+pnpm run preview    # `cf previews deploy`, which builds a preview named after the branch
 ```
 
 Workers Builds settings:
@@ -46,7 +46,7 @@ Workers Builds settings:
 | Root directory | `/` |
 | Build command | `pnpm build` |
 | Deploy command | `pnpm run deploy` |
-| Non-production branch deploy command | `pnpm run preview` (`cf previews deploy --prebuilt`) |
+| Non-production branch deploy command | `pnpm run preview` (`cf previews deploy`) |
 | Production branch | `main` |
 
 Set `SITE_URL` (build variable) only if the docs move off `https://durable-machines.ericclemmons.workers.dev`; it sets the docs' canonical URLs and sitemap.
