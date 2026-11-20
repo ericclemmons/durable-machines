@@ -2,7 +2,7 @@
 
 Put an [XState v6](https://stately.ai/docs) machine in a Cloudflare Durable Object. It keeps its state, its timers and its messages to other objects, and you can watch every one of them happen.
 
-**[Docs and live demo](https://durable-machines.eclemmons.workers.dev/)**
+**[Docs and live demo](https://durable-machines.ericclemmons.workers.dev/)**
 
 ```sh
 npm install durable-machines xstate@beta agents effect

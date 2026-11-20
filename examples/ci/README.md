@@ -6,12 +6,11 @@ once, then receives only events.
 
 ```sh
 pnpm install      # from the repository root
-pnpm dev           # http://localhost:5173
+pnpm dev           # http://localhost:5173/ci/, with the docs and Durable Bank
 pnpm check         # tsc + graph coverage check
-pnpm run deploy    # cf deploy, to durable-machines-ci on workers.dev
 ```
 
-Deploys use [`cf`](https://developers.cloudflare.com/cf/) and [`cloudflare.config.ts`](cloudflare.config.ts), not Wrangler. The app is served at `/` of its own Worker, so the docs can embed it in an iframe.
+This example has no Worker of its own. [`apps/site`](../../apps/site) serves it at `/ci/`, next to the docs at `/` and Durable Bank at `/bank/`, and routes `/ci/api/*` and `/ci/webhooks/*` to [`src/worker/index.ts`](src/worker/index.ts). The [CI](../../apps/docs/src/content/docs/examples/ci.mdx) docs page embeds it. To deploy, see [Deploy](../../README.md#deploy).
 
 The UI uses the [Kumo](https://kumo-ui.com) design system (`@cloudflare/kumo`) and its colour tokens.
 
@@ -36,12 +35,12 @@ Objects are named by kind with their id after it, such as "GitHub App Installati
 - **Instant** to **4 s**: ▶ plays every hop after that delay and becomes ⏸. Play pauses itself once nothing has moved for 1.5 s. Only the tab that pressed ▶ does this, since another tab may watch a different account.
 - When nothing is moving, or you picked a different scenario than the one running, ▶ resets and starts the selected scenario. There's no step back.
 
-The clock is one Durable Object ([`src/worker/clock.ts`](src/worker/clock.ts), capability in [`packages/durable-machines/src/clock.ts`](../../packages/durable-machines/src/clock.ts)). A paused outbox message is a Lifecycle job parked a year out; Next reschedules it to now. A paused Workflow step waits with `step.waitForEvent`, and Next sends the event. `/api/clock` (`{"action":"pause"|"play"|"next"|"nextMachine","pace":ms}`) drives it from scripts.
+The clock is one Durable Object ([`src/worker/clock.ts`](src/worker/clock.ts), capability in [`packages/durable-machines/src/clock.ts`](../../packages/durable-machines/src/clock.ts)). A paused outbox message is a Lifecycle job parked a year out; Next reschedules it to now. A paused Workflow step waits with `step.waitForEvent`, and Next sends the event. `/ci/api/clock` (`{"action":"pause"|"play"|"next"|"nextMachine","pace":ms}`) drives it from scripts.
 
 ## What it models
 
 ```
-GitHub ──POST /webhooks/github──▶ Worker (Effect pipeline: verify HMAC → decode → resolve installation)
+GitHub ──POST /ci/webhooks/github──▶ Worker (Effect pipeline: verify HMAC → decode → resolve installation)
                                     │ callDurableObject → send(scm.event, { messageId: X-GitHub-Delivery })
                                     ▼
                                Installation DO (installationMachine: not_installed | installed.{active.{no_token|token_valid|token_expired} | suspended} | uninstalled; repo → accounts)
@@ -110,11 +109,11 @@ The same `do-call.ts` is used by the webhook Worker and the BuildWorkflow. The W
 
 ## Useful endpoints
 
-- `POST /api/simulate`: build and sign a GitHub payload, then run it through the real webhook pipeline. `{ replay: { githubEvent, deliveryId, payload } }` redelivers an earlier one.
-- `POST /webhooks/github`: the real webhook. The secret is `GITHUB_WEBHOOK_SECRET` in `cloudflare.config.ts`.
-- `POST /api/chaos { target: "Project/free-web", mode: "overloaded" | "retryable" | null, seconds }`: make a DO throw the runtime's errors, to watch the outbox recover.
-- `GET /api/view/{installation|account|project}/:name`: a DO's current view, as JSON.
-- `POST /api/reset`: reset every DO.
+- `POST /ci/api/simulate`: build and sign a GitHub payload, then run it through the real webhook pipeline. `{ replay: { githubEvent, deliveryId, payload } }` redelivers an earlier one.
+- `POST /ci/webhooks/github`: the real webhook. The secret is `GITHUB_WEBHOOK_SECRET` in [`apps/site/cloudflare.config.ts`](../../apps/site/cloudflare.config.ts).
+- `POST /ci/api/chaos { target: "Project/free-web", mode: "overloaded" | "retryable" | null, seconds }`: make a DO throw the runtime's errors, to watch the outbox recover.
+- `GET /ci/api/view/{installation|account|project}/:name`: a DO's current view, as JSON.
+- `POST /ci/api/reset`: reset every DO.
 
 ## Known limits
 
