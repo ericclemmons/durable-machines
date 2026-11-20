@@ -226,6 +226,9 @@ importers:
       '@cloudflare/kumo':
         specifier: ^2.19.0
         version: 2.19.0(@date-fns/tz@1.5.0)(@phosphor-icons/react@2.1.10(react-dom@19.3.1(react@19.3.1))(react@19.3.1))(@types/react@19.3.0)(date-fns@4.4.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(zod@4.6.7)
+      '@durable-machines/inspector':
+        specifier: workspace:*
+        version: link:../../packages/inspector
       '@phosphor-icons/react':
         specifier: ^2.1.10
         version: 2.1.10(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
@@ -290,6 +293,9 @@ importers:
       '@cloudflare/kumo':
         specifier: ^2.19.0
         version: 2.19.0(@date-fns/tz@1.5.0)(@phosphor-icons/react@2.1.10(react-dom@19.3.1(react@19.3.1))(react@19.3.1))(@types/react@19.3.0)(date-fns@4.4.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(zod@4.6.7)
+      '@durable-machines/inspector':
+        specifier: workspace:*
+        version: link:../../packages/inspector
       '@phosphor-icons/react':
         specifier: ^2.1.10
         version: 2.1.10(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
@@ -366,6 +372,34 @@ importers:
       xstate:
         specifier: ^6.0.0-beta.3
         version: 6.0.0-beta.3
+
+  packages/inspector:
+    dependencies:
+      durable-machines:
+        specifier: workspace:*
+        version: link:../durable-machines
+    devDependencies:
+      '@cloudflare/kumo':
+        specifier: ^2.19.0
+        version: 2.19.0(@date-fns/tz@1.5.0)(@phosphor-icons/react@2.1.10(react-dom@19.3.1(react@19.3.1))(react@19.3.1))(@types/react@19.3.0)(date-fns@4.4.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(zod@4.6.7)
+      '@phosphor-icons/react':
+        specifier: ^2.1.10
+        version: 2.1.10(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
+      '@types/react':
+        specifier: ^19.3.0
+        version: 19.3.0
+      agents:
+        specifier: ^0.33.0
+        version: 0.33.0(@babel/core@8.1.2)(@babel/runtime@8.1.2)(@modelcontextprotocol/client@2.4.0)(react@19.3.1)(rolldown@1.2.19)(vite@8.3.8(esbuild@0.28.2)(jiti@2.7.0)(yaml@2.9.1))(zod@4.6.7)
+      elkjs:
+        specifier: ^0.12.1
+        version: 0.12.1
+      react:
+        specifier: ^19.3.1
+        version: 19.3.1
+      typescript:
+        specifier: ^7.0.2
+        version: 7.0.2
 
 packages:
 
