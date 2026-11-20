@@ -22,6 +22,8 @@ const emit = () => {
 };
 
 const JOURNAL_LIMIT = 150;
+// Entries loaded with `history()` per object, kept on top of the limit.
+const older = new Map<string, number>();
 
 // The order journal entries reached this page, across every object. Many entries share a
 // millisecond, so comparing objects by this is closer to what happened than `at`.
@@ -56,9 +58,8 @@ export function snapshotBefore(key: string, seq: number) {
   return undefined;
 }
 
-/** Servers from before the rename journal a message leaving the outbox as `delivered`; it is a `sent` entry. */
-const normalize = (entries: ReadonlyArray<JournalEntry>): JournalEntry[] =>
-  entries.map((e) => ((e.kind as string) === "delivered" ? { ...e, kind: "sent" } : e));
+/** Old journals have `delivered` where new ones have `sent`: the inspector reads both as `sent`. */
+const normalize = (entries: ReadonlyArray<JournalEntry>): JournalEntry[] => entries.map((e) => (e.kind === "delivered" ? { ...e, kind: "sent" } : e));
 
 const normalizeView = (view: MachineView): MachineView => ({ ...view, journal: normalize(view.journal) });
 
@@ -68,7 +69,7 @@ function fresh(view: MachineView, frame: MachineCommit) {
   return normalize(frame.entries.filter((e) => !seen.has(e.seq)));
 }
 
-function apply(view: MachineView, frame: MachineCommit, entries: JournalEntry[]): MachineView {
+function apply(key: string, view: MachineView, frame: MachineCommit, entries: JournalEntry[]): MachineView {
   const byId = new Map([view.root, ...view.children].map((a) => [a.id, a]));
   for (const actor of frame.actors) byId.set(actor.id, actor);
   for (const id of frame.removed) byId.delete(id);
@@ -78,7 +79,7 @@ function apply(view: MachineView, frame: MachineCommit, entries: JournalEntry[])
     ...view,
     root,
     children: [...byId.values()],
-    journal: [...view.journal, ...entries].slice(-JOURNAL_LIMIT),
+    journal: [...view.journal, ...entries].slice(-(JOURNAL_LIMIT + (older.get(key) ?? 0))),
     outbox: frame.outbox,
     deadLetters: frame.deadLetters,
   };
@@ -92,6 +93,7 @@ const KIND_STYLE: Record<JournalEntry["kind"], string> = {
   unhandled: "color:#71717a",
   rejected: "color:#f87171",
   sent: "color:#7dd3fc",
+  delivered: "color:#7dd3fc",
   duplicate: "color:#c4b5fd",
   retrying: "color:#fbbf24",
   "dead-letter": "color:#ef4444;font-weight:bold",
@@ -121,6 +123,7 @@ export const viewStore = {
     const view = normalizeView(raw);
     views.set(key, view);
     forgetArrivals(key);
+    older.delete(key);
     const last = view.journal.at(-1);
     if (last) remember(key, last.seq, view);
     emit();
@@ -130,7 +133,7 @@ export const viewStore = {
     if (!view) return;
     const entries = fresh(view, frame);
     logEntries(key, view.machineId, entries);
-    const next = apply(view, frame, entries);
+    const next = apply(key, view, frame, entries);
     views.set(key, next);
     for (const entry of entries) {
       remember(key, entry.seq, next);
@@ -150,6 +153,37 @@ export const viewStore = {
     return () => listeners.delete(listener);
   },
 };
+
+/** Does any object have entries older than the ones the page has? A journal that starts at seq 1 is whole. */
+export const hasOlder = () => [...views.values()].some((v) => (v.journal[0]?.seq ?? 1) > 1);
+
+/** How many entries `loadOlder` added, over every object. */
+export const olderCount = () => [...older.values()].reduce((a, b) => a + b, 0);
+
+/**
+ * Load each object's entries before the oldest the page has, with its `history()` callable.
+ * Resolves to how many arrived. An object without `history()` just adds none.
+ */
+export async function loadOlder(limit = 100): Promise<number> {
+  const counts = await Promise.all(
+    [...views].map(async ([key, view]) => {
+      const [first] = view.journal;
+      if (!first || first.seq <= 1 || !callers.has(key)) return 0;
+      const page = normalize((await callOn(key, "history", [{ before: first.seq, limit }]).catch(() => [])) as JournalEntry[]);
+      const current = views.get(key);
+      if (!current) return 0;
+      const seen = new Set(current.journal.map((e) => e.seq));
+      const added = page.filter((e) => !seen.has(e.seq));
+      if (!added.length) return 0;
+      older.set(key, (older.get(key) ?? 0) + added.length);
+      views.set(key, { ...current, journal: [...added, ...current.journal] });
+      return added.length;
+    }),
+  );
+  const total = counts.reduce((a, b) => a + b, 0);
+  if (total) emit();
+  return total;
+}
 
 /** A JSON frame with a string `type`. The objects send only frame types the app knows. */
 export function parseFrame<T extends { type: string }>(data: string): T | undefined {

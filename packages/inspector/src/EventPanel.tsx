@@ -3,7 +3,7 @@ import { ArrowDownIcon, HourglassIcon, PauseCircleIcon, PushPinIcon } from "@pho
 import { useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import type { JournalEntry, MachineView } from "durable-machines/protocol";
 import { definitionOf, eventLabel, formatValue } from "./graph";
-import { setPinned, setSelectedNode, startBefore, useAllViews, useClock, useInFlight, usePinned, useSending, useViewsVersion, type Busy } from "./store";
+import { hasOlder, loadOlder, olderCount, setPinned, setSelectedNode, startBefore, useAllViews, useClock, useInFlight, usePinned, useSending, useViewsVersion, type Busy } from "./store";
 import { compareEntries } from "./timeline";
 import { JsonView, ObjectLabel } from "./ui";
 
@@ -14,6 +14,7 @@ const KIND: Record<JournalEntry["kind"], { text: string; className: string }> = 
   unhandled: { text: "unhandled", className: "text-kumo-subtle" },
   rejected: { text: "rejected", className: "text-kumo-danger" },
   sent: { text: "sent", className: "text-sky-700" },
+  delivered: { text: "sent", className: "text-sky-700" },
   duplicate: { text: "duplicate", className: "text-purple-700" },
   retrying: { text: "retrying", className: "text-kumo-warning" },
   "dead-letter": { text: "dead letter", className: "text-kumo-danger font-medium" },
@@ -89,15 +90,17 @@ export function EventPanel({
   const pinned = usePinned();
   const list = useRef<HTMLOListElement>(null);
   const atBottom = useRef(true);
-  const { rows, skipped, start, byOwner } = useMemo(() => {
+  const { rows, skipped, start, byOwner, more } = useMemo(() => {
     const all = views
       .flatMap(([owner, v]) => v.journal.map((entry) => ({ owner, root: v.machineId, entry })))
       .sort((a, b) => compareEntries(a.owner, a.entry, b.owner, b.entry));
     // The start: just before the first entry.
     const [first] = all;
+    const limit = 300 + olderCount();
     return {
-      rows: all.slice(-300),
-      skipped: Math.max(0, all.length - 300),
+      rows: all.slice(-limit),
+      skipped: Math.max(0, all.length - limit),
+      more: hasOlder(),
       start: first && startBefore({ owner: first.owner, seq: first.entry.seq, at: first.entry.at }),
       byOwner: new Map(views),
     };
@@ -132,9 +135,24 @@ export function EventPanel({
   const [unseen, setUnseen] = useState(0);
   const seen = useRef(rows.length);
   const toBottom = () => list.current?.scrollTo({ top: list.current.scrollHeight, behavior: "smooth" });
+  // Scrolled to the top: load older events with `history()`, keeping the rows you see in place.
+  const loading = useRef<{ height: number }>(undefined);
+  const loadMore = (el: HTMLOListElement) => {
+    if (loading.current || !more) return;
+    loading.current = { height: el.scrollHeight };
+    void loadOlder().then((count) => {
+      if (!count) loading.current = undefined;
+    });
+  };
   useLayoutEffect(() => {
     const added = rows.length - seen.current;
     seen.current = rows.length;
+    const el = list.current;
+    if (loading.current && added > 0 && el) {
+      el.scrollTop += el.scrollHeight - loading.current.height;
+      loading.current = undefined;
+      return;
+    }
     if (atBottom.current) toBottom();
     else if (added > 0) setUnseen((n) => n + added);
   }, [rows.length, clock.parked.length]);
@@ -152,6 +170,7 @@ export function EventPanel({
             const el = e.currentTarget;
             atBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
             if (atBottom.current) setUnseen(0);
+            if (el.scrollTop < 40) loadMore(el);
           }}
         >
           {rows.length === 0 && (
@@ -159,7 +178,10 @@ export function EventPanel({
               <Text variant="secondary">{emptyText}</Text>
             </li>
           )}
-          {start && rows.length > 0 && skipped === 0 && (
+          {more && rows.length > 0 && (
+            <li className="px-4 py-2 text-center text-xs text-kumo-subtle">Scroll up for older events</li>
+          )}
+          {start && rows.length > 0 && skipped === 0 && !more && (
             <li className={`border-b border-kumo-hairline ${atStart ? "bg-purple-500/5" : ""}`}>
               <button
                 data-row={-1}
